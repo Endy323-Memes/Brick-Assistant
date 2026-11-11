@@ -1,0 +1,1 @@
+﻿Frequency-ranked word lists from the zxcvbn project (MIT license), used to choose which words are recorded in real David for the phone. us_tv_and_film = conversational English; english_wikipedia = general vocabulary; names = common first names.

@@ -1,0 +1,31 @@
+# Gradle / Android Studio
+.gradle/
+.kotlin/
+.idea/
+*.iml
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Machine-specific SDK path
+local.properties
+
+# Signing keys and secrets (never commit these)
+*.jks
+*.keystore
+*.p12
+*.pem
+google-services.json
+.env
+
+# Local snapshot from before the Driver integration (not part of the project)
+.backup-before-driver-integration/
+
+# Brick's recorded word bank: 131 MB, over GitHub's 100 MB file limit.
+# Rebuild it with tools/render-david-words.ps1 (see README "Building").
+app/src/main/assets/david_words/words.adpcm
+
+# OS junk
+.DS_Store
+Thumbs.db

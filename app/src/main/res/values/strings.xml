@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Brick</string>
+    <string name="tile_label">Ask Brick</string>
+    <string name="tap_service_label">Brick tap pass-through</string>
+    <string name="tap_service_description">While Brick\'s card is on screen, a tap or swipe outside it is replayed into the app underneath, so you don\'t have to tap twice. Brick only performs the gesture you just made; it doesn\'t read your screen or other apps.</string>
+</resources>
