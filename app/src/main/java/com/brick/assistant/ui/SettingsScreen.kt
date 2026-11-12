@@ -264,6 +264,10 @@ fun SettingsScreen(vm: AssistantViewModel, requestPermissions: (Array<String>) -
             SwitchRow("Pause in a pocket", s.pocketPause, "Stops listening while the phone is in a pocket or bag.") { v ->
                 update { it.copy(pocketPause = v) }
             }
+            SwitchRow("Pause on low battery", s.lowBatteryPause,
+                "Stops listening while battery saver is on, or under 15% and not charging. The card and buttons still work.") { v ->
+                update { it.copy(lowBatteryPause = v) }
+            }
             SwitchRow("Use Bluetooth headphones' mic", s.headsetMic, "For requests, when headphones with a mic are connected.") { v ->
                 update { it.copy(headsetMic = v) }
             }
@@ -334,17 +338,28 @@ fun SettingsScreen(vm: AssistantViewModel, requestPermissions: (Array<String>) -
             }
         }
 
-        // ------------------------------------------------------------ Quiet outdoors
-        Section("Quiet outdoors", TermBlue, if (s.quietOutdoors) "On · above ${"%,d".format(s.outdoorLux)} lux" else "Off") {
+        // ------------------------------------------------------------ Quiet When
+        val quietSummary = when {
+            s.quietDark -> "In the dark · below ${"%,d".format(s.outdoorLux)} lux"
+            s.quietDay -> "During the day · above ${"%,d".format(s.outdoorLux)} lux"
+            else -> "Off"
+        }
+        Section("Quiet When", TermBlue, quietSummary) {
+            // Opposites: turning one on turns the other off (both on would mean never speaking).
             SwitchRow(
-                "Text only when outside",
-                s.quietOutdoors,
+                "Text only in the dark",
+                s.quietDark,
+                "In low light, Brick and the unit don't speak. Answers still show as text. Headphones and the car still hear them.",
+            ) { v -> update { it.copy(quietDark = v, quietDay = if (v) false else it.quietDay) } }
+            SwitchRow(
+                "Text only during the day",
+                s.quietDay,
                 "In bright light, Brick and the unit don't speak. Answers still show as text. Headphones and the car still hear them.",
-            ) { v -> update { it.copy(quietOutdoors = v) } }
-            if (s.quietOutdoors) {
+            ) { v -> update { it.copy(quietDay = v, quietDark = if (v) false else it.quietDark) } }
+            if (s.quietDark || s.quietDay) {
                 // 0 to 500 lux in steps of 5.
                 LabeledSlider(
-                    "Outdoor light level",
+                    "Light level",
                     s.outdoorLux.toFloat(),
                     0f..500f,
                     steps = 99,
@@ -354,8 +369,9 @@ fun SettingsScreen(vm: AssistantViewModel, requestPermissions: (Array<String>) -
                 Hint(
                     if (lux == null) "No light sensor reading." else
                         "Light here now: ${"%,d".format(lux.roundToInt())} lux, " +
-                            (if (lux >= s.outdoorLux) "so Brick would stay quiet." else "so Brick would speak.") +
-                            " Indoors is usually 100 to 300 lux, and daylight outside is well over 500. It only works in daylight.",
+                            (if (com.brick.assistant.voice.Outdoors.quietAt(lux, s.quietDark, s.quietDay, s.outdoorLux))
+                                "so Brick would stay quiet." else "so Brick would speak.") +
+                            " A dark room is under 10 lux, indoors is usually 100 to 300, and daylight outside is well over 500.",
                 )
             }
         }
@@ -444,6 +460,61 @@ fun SettingsScreen(vm: AssistantViewModel, requestPermissions: (Array<String>) -
         // ------------------------------------------------------------ Places
         Section("Places", TermBlue, placesSummary()) {
             PlacesContent()
+        }
+
+        // ------------------------------------------------------------ Smart home
+        var goveeStatus by remember { mutableStateOf("") }
+        Section("Smart home", TermBlue, if (s.goveeKey.isBlank()) "Opens your home apps" else "Govee lights") {
+            OutlinedTextField(
+                value = s.goveeKey,
+                onValueChange = { v -> update { it.copy(goveeKey = v.trim()) }; goveeStatus = "" },
+                label = { Text("Govee API key") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Hint(
+                "With a Govee key, Brick switches, dims and colors your Govee lights (\"turn off the bedroom lights\"). " +
+                    "Get one in the Govee Home app: Profile > Settings > Apply for API Key. Google Home, SmartThings, " +
+                    "Alexa and the rest don't let other apps switch their devices, so Brick opens their app.",
+            )
+            OutlinedButton(enabled = s.goveeKey.isNotBlank(), onClick = {
+                goveeStatus = "Testing…"
+                scope.launch {
+                    val list = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        com.brick.assistant.brain.Govee.load(s.goveeKey, force = true)
+                    }
+                    goveeStatus = when {
+                        list == null -> "Govee didn't accept that key."
+                        list.isEmpty() -> "Key works, but no lights are on the account."
+                        else -> "Key works: " + list.joinToString(", ") { it.name } + "."
+                    }
+                }
+            }) { Text("Test key") }
+            if (goveeStatus.isNotEmpty()) Text(goveeStatus, style = MaterialTheme.typography.bodySmall, color = RobotColor)
+        }
+
+        // ------------------------------------------------------------ Movies & TV
+        var tmdbStatus by remember { mutableStateOf("") }
+        Section("Movies & TV", TermBlue, if (s.tmdbKey.isBlank()) "Wikidata listings" else "TMDB listings") {
+            OutlinedTextField(
+                value = s.tmdbKey,
+                onValueChange = { v -> update { it.copy(tmdbKey = v.trim()) }; tmdbStatus = "" },
+                label = { Text("TMDB API key (optional)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Hint(
+                "Brick answers \"where can I watch...\" from Wikidata, which can be out of date. With a free TMDB key, it uses " +
+                    "current listings for your country (from JustWatch) and adds TMDB's rating. Get one at themoviedb.org: " +
+                    "Settings > API. The API key or the read access token both work.",
+            )
+            OutlinedButton(enabled = s.tmdbKey.isNotBlank(), onClick = {
+                tmdbStatus = "Testing…"
+                scope.launch {
+                    tmdbStatus = if (com.brick.assistant.brain.MediaGuide.tmdbWorks(s.tmdbKey)) "Key works." else "TMDB didn't accept that key."
+                }
+            }) { Text("Test key") }
+            if (tmdbStatus.isNotEmpty()) Text(tmdbStatus, style = MaterialTheme.typography.bodySmall, color = RobotColor)
         }
 
         // ------------------------------------------------------------ Setup

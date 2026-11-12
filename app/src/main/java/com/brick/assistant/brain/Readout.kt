@@ -15,6 +15,8 @@ class Readout(
     val refresh: (() -> Readout)? = null,
     /** Keeps changing on its own (a running stopwatch, a playing song): redrawn every second while shown. */
     val live: Boolean = false,
+    /** A lyric view under the box: plain, line-synced or word-synced, following the song as it plays. */
+    val lyrics: LyricsPanel? = null,
 )
 
 /** A live control on a readout. Each reads its current value when drawn, so it shows the real state. */
@@ -63,7 +65,7 @@ object Box {
     }
 
     /** "LABEL  value": the label padded to a 7-character column. */
-    fun kv(label: String, value: String) = label.uppercase(Locale.US).padEnd(7) + value
+    fun kv(label: String, value: String) = label.uppercase(Locale.US).let { if (it.length >= 7) "$it " else it.padEnd(7) } + value
 
     /** [text] broken into rows of the box's width, the rows after the first indented by [indent]. */
     fun wrap(text: String, first: String = "", indent: Int = first.length, max: Int = 8): List<String> {
@@ -112,4 +114,28 @@ object Box {
             }
         }.joinToString("")
     }
+}
+
+/**
+ * Lyrics shown live in the readout card. [position] is the song's playback position in milliseconds now (null
+ * when unknown), [playing] whether it's moving, and [seek] jumps the song to a line when you tap it.
+ */
+class LyricsPanel(
+    val doc: LyricsDoc,
+    val position: () -> Long?,
+    val playing: () -> Boolean,
+    val seek: ((Long) -> Unit)? = null,
+    /** Play/pause for the full-screen view (null for a named song that isn't playing). */
+    val toggle: (() -> Unit)? = null,
+    /** Whether these lyrics' song is the one playing now; full screen is only for that song. */
+    val sameSong: () -> Boolean = { true },
+    /** The song's length in milliseconds, when the player says. */
+    val duration: () -> Long? = { null },
+    /** The app playing it ("Driver", "Spotify"), shown in the full-screen view. */
+    val app: String? = null,
+)
+
+/** The lyrics on Brick's card right now, so the full-screen view can pick up the same song and controls. */
+object LyricsHolder {
+    @Volatile var current: LyricsPanel? = null
 }

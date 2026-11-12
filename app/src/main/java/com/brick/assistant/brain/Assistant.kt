@@ -52,6 +52,31 @@ class Assistant(
      */
     @Volatile var textOnly: suspend () -> Boolean = { false }
 
+    /** The card's mute button: Brick's voice and/or the unit's stay silent (lines still show as text). */
+    @Volatile var muteBrick = false
+        private set
+    @Volatile var muteUnit = false
+        private set
+    /** Who is talking right now, so muting them can cut the line short. */
+    @Volatile private var speaking: Speaker? = null
+
+    /** Mutes or unmutes each voice; a muted voice that's talking stops at once. */
+    fun setMuted(brick: Boolean, unit: Boolean) {
+        muteBrick = brick
+        muteUnit = unit
+        val s = speaking
+        if (s == Speaker.DAVID && brick || s == Speaker.ROBOT && unit) voice.stopNow()
+    }
+
+    private fun muted(who: Speaker) = if (who == Speaker.DAVID) muteBrick else muteUnit
+
+    /** Plays [file] as [who], unless that voice is muted. */
+    private suspend fun playAs(who: Speaker, file: java.io.File) {
+        if (muted(who)) return
+        speaking = who
+        try { voice.play(file) } finally { speaking = null }
+    }
+
     /** The last request was answered in text only (the floating card stays up longer so you can read it). */
     @Volatile var lastTextOnly = false
         private set
@@ -109,15 +134,15 @@ class Assistant(
 
         val quiet = isQuiet()
         val result = coroutineScope {
-            val davidAudio = async { if (quiet) null else davidLine?.let { voice.renderDavid(it) } }
+            val davidAudio = async { if (quiet || muteBrick) null else davidLine?.let { voice.renderDavid(it) } }
             val resultD = async { actions.prepare(req) }
-            val robotAudio = async { if (quiet) null else resultD.await().let { r -> renderLine(r) } }
+            val robotAudio = async { if (quiet) null else resultD.await().let { r -> if (muted(speakerOf(r.voice))) null else renderLine(r) } }
 
             if (!quiet) voice.beginSpeaking()
             try {
                 if (davidLine != null) {
                     onEvent(LogEntry(Speaker.DAVID, davidLine, cat))
-                    davidAudio.await()?.let { voice.play(it.file) }
+                    davidAudio.await()?.let { playAs(Speaker.DAVID, it.file) }
                 }
                 val r = resultD.await()
                 // Nothing to open (e.g. skipping a Spotify song): play it with the answer.
@@ -126,7 +151,7 @@ class Assistant(
                 // The readout goes first so the spoken line stays the last entry (the card shows the last line).
                 r.shown()?.let { onEvent(LogEntry(Speaker.SYSTEM, it.text, cat, panel = true, readout = it)) }
                 if (r.voice != LineVoice.NONE) onEvent(LogEntry(speakerOf(r.voice), r.robotLine, cat))
-                robotAudio.await()?.let { voice.play(it) }
+                robotAudio.await()?.let { playAs(speakerOf(r.voice), it) }
                 r
             } finally {
                 if (!quiet) voice.endSpeaking()
@@ -152,15 +177,15 @@ class Assistant(
 
     /** Text only this time? (A failing check never silences Brick.) */
     private suspend fun isQuiet(): Boolean =
-        (try { textOnly() } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; false }).also { lastTextOnly = it }
+        (try { textOnly() } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; false }).also { lastTextOnly = it || muteBrick && muteUnit }
 
     private suspend fun robotOnly(r: ActionResult, onEvent: (LogEntry) -> Unit) {
         r.shown()?.let { onEvent(LogEntry(Speaker.SYSTEM, it.text, panel = true, readout = it)) }
         if (r.voice != LineVoice.NONE) onEvent(LogEntry(speakerOf(r.voice), r.robotLine))
-        if (!isQuiet()) {
+        if (!isQuiet() && r.voice != LineVoice.NONE && !muted(speakerOf(r.voice))) {
             voice.beginSpeaking()
             try {
-                renderLine(r)?.let { voice.play(it) }
+                renderLine(r)?.let { playAs(speakerOf(r.voice), it) }
             } finally {
                 voice.endSpeaking()
             }

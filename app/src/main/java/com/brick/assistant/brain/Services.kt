@@ -31,12 +31,13 @@ fun Context.hasPermission(p: String) =
 internal object Http {
     private const val UA = "BrickAssistant/1.0 (Android personal assistant app)"
 
-    fun getJson(url: String): JSONObject? = try {
+    fun getJson(url: String, headers: Map<String, String> = emptyMap()): JSONObject? = try {
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 6000
         c.readTimeout = 8000
         c.setRequestProperty("User-Agent", UA)
         c.setRequestProperty("Accept", "application/json")
+        for ((k, v) in headers) c.setRequestProperty(k, v)
         val body = if (c.responseCode == 200) c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) } else null
         c.disconnect()
         body?.let { JSONObject(it) }
@@ -44,6 +45,40 @@ internal object Http {
         null
     }
 
+    /** Answers kept for [CACHE_MS] (lookups, ratings, listings, songs), then deleted. */
+    private class Cached(val json: JSONObject, val at: Long)
+    private val cache = object : LinkedHashMap<String, Cached>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Cached>?) = size > CACHE_MAX
+    }
+    private const val CACHE_MS = 10 * 60_000L
+    private const val CACHE_MAX = 64
+
+    /** [getJson], but a repeat within 10 minutes comes from memory. Older answers are deleted, never reused. */
+    fun getJsonCached(url: String, headers: Map<String, String> = emptyMap()): JSONObject? {
+        val now = System.currentTimeMillis()
+        synchronized(cache) {
+            cache.values.removeAll { now - it.at >= CACHE_MS }
+            cache[url]?.let { return it.json }
+        }
+        val fresh = getJson(url, headers) ?: return null
+        synchronized(cache) { cache[url] = Cached(fresh, now) }
+        return fresh
+    }
+
+
+    /** A JSON array answer (lrclib.net's search), or null. */
+    fun getJsonArray(url: String): org.json.JSONArray? = try {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 6000
+        c.readTimeout = 8000
+        c.setRequestProperty("User-Agent", UA)
+        c.setRequestProperty("Accept", "application/json")
+        val body = if (c.responseCode == 200) c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) } else null
+        c.disconnect()
+        body?.let { org.json.JSONArray(it) }
+    } catch (e: Exception) {
+        null
+    }
     fun enc(s: String): String = URLEncoder.encode(s, "UTF-8")
 }
 

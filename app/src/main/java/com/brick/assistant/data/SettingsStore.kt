@@ -66,9 +66,13 @@ data class AppSettings(
     val headsetMic: Boolean = true,
     /** Pause "Hey Brick" while the phone is in a pocket (light and proximity sensors). */
     val pocketPause: Boolean = true,
-    /** Outdoors (bright ambient light): Brick and the unit stay silent and answer in text only. */
-    val quietOutdoors: Boolean = false,
-    /** Light level (lux) at or above which you count as outdoors. Daylight outside is about 1,000 to 100,000 lux. */
+    /** Pause "Hey Brick" while battery saver is on, or under 15% and not charging. */
+    val lowBatteryPause: Boolean = true,
+    /** Quiet When, in the dark: below [outdoorLux], Brick and the unit stay silent and answer in text only. */
+    val quietDark: Boolean = false,
+    /** Quiet When, during the day: at or above [outdoorLux], text only (the opposite of [quietDark]). */
+    val quietDay: Boolean = false,
+    /** The light level (lux) Quiet When compares against. Daylight outside is about 1,000 to 100,000 lux. */
     val outdoorLux: Int = 500,
     /** Never show latitude and longitude on night sky readouts. */
     val hideSkyCoords: Boolean = false,
@@ -83,6 +87,10 @@ data class AppSettings(
     val homeCity: String = "",
     /** Optional AccuWeather API key (developer.accuweather.com). Blank = Open-Meteo. */
     val accuWeatherKey: String = "",
+    /** Govee open-API key (Govee Home app > Profile > Settings > Apply for API Key): lets Brick switch Govee lights. */
+    val goveeKey: String = "",
+    /** Free TMDB key (v3 key or read token): exact, current "where to watch" listings and TMDB ratings. */
+    val tmdbKey: String = "",
     /** Weather source: "auto" (AccuWeather with a key, else Open-Meteo), "accuweather", "open_meteo", or a [com.brick.assistant.brain.WeatherProvider] id. */
     val weatherSource: String = "auto",
     /** API keys for the other weather sources, by source id. */
@@ -133,7 +141,9 @@ data class AppSettings(
         put("wakeWordEnabled", wakeWordEnabled)
         put("headsetMic", headsetMic)
         put("pocketPause", pocketPause)
-        put("quietOutdoors", quietOutdoors)
+        put("lowBatteryPause", lowBatteryPause)
+        put("quietDark", quietDark)
+        put("quietDay", quietDay)
         put("outdoorLux", outdoorLux)
         put("hideSkyCoords", hideSkyCoords)
         put("obscureSkyLocation", obscureSkyLocation)
@@ -143,6 +153,8 @@ data class AppSettings(
         put("useFahrenheit", useFahrenheit)
         put("homeCity", homeCity)
         put("accuWeatherKey", accuWeatherKey)
+        put("goveeKey", goveeKey)
+        put("tmdbKey", tmdbKey)
         put("weatherSource", weatherSource)
         put("weatherKeys", JSONObject().apply { weatherKeys.forEach { (k, v) -> put(k, v) } })
         put("musicPackage", musicPackage)
@@ -207,7 +219,10 @@ data class AppSettings(
                     wakeWordEnabled = o.optBoolean("wakeWordEnabled", d.wakeWordEnabled),
                     headsetMic = o.optBoolean("headsetMic", d.headsetMic),
                     pocketPause = o.optBoolean("pocketPause", d.pocketPause),
-                    quietOutdoors = o.optBoolean("quietOutdoors", d.quietOutdoors),
+                    lowBatteryPause = o.optBoolean("lowBatteryPause", d.lowBatteryPause),
+                    quietDark = o.optBoolean("quietDark", d.quietDark),
+                    // Older settings called the bright-light switch "quietOutdoors".
+                    quietDay = o.optBoolean("quietDay", o.optBoolean("quietOutdoors", d.quietDay)),
                     outdoorLux = (o.optInt("outdoorLux", d.outdoorLux).coerceIn(0, 500) / 5) * 5,
                     hideSkyCoords = o.optBoolean("hideSkyCoords", d.hideSkyCoords),
                     obscureSkyLocation = o.optBoolean("obscureSkyLocation", d.obscureSkyLocation),
@@ -217,6 +232,8 @@ data class AppSettings(
                     useFahrenheit = o.optBoolean("useFahrenheit", d.useFahrenheit),
                     homeCity = o.optString("homeCity", d.homeCity),
                     accuWeatherKey = o.optString("accuWeatherKey", d.accuWeatherKey),
+                    goveeKey = o.optString("goveeKey", d.goveeKey),
+                    tmdbKey = o.optString("tmdbKey", d.tmdbKey),
                     weatherSource = o.optString("weatherSource", d.weatherSource),
                     weatherKeys = o.optJSONObject("weatherKeys")?.let { k -> k.keys().asSequence().associateWith { k.optString(it) } } ?: d.weatherKeys,
                     musicPackage = o.optString("musicPackage", d.musicPackage),

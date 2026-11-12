@@ -45,8 +45,8 @@ class DeviceTest {
         assertEquals(Request.Device(DeviceOp.BATTERY), IntentParser.parse("whats my battery"))
         assertEquals(Request.TellTime(false, null), IntentParser.parse("whats the time"))
         assertEquals(Request.Device(DeviceOp.BRIGHT_SET, 80), IntentParser.parse("set brightness to 80%"))
-        assertEquals(Request.Device(DeviceOp.WIFI), IntentParser.parse("turn off wi-fi"))
-        assertEquals(Request.Device(DeviceOp.BLUETOOTH), IntentParser.parse("turn bluetooth on"))
+        assertEquals(Request.PhoneSettingReq(PhoneSetting.WIFI, false), IntentParser.parse("turn off wi-fi"))
+        assertEquals(Request.PhoneSettingReq(PhoneSetting.BLUETOOTH, true), IntentParser.parse("turn bluetooth on"))
         // Music controls still work
         assertEquals(Request.Music(MusicCommand.PAUSE, null), IntentParser.parse("pause"))
     }

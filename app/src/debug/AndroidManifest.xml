@@ -11,6 +11,10 @@
             android:exported="true"
             android:permission="android.permission.DUMP" />
         <receiver
+            android:name=".DebugVoiceBankReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+        <receiver
             android:name=".DebugWakeReceiver"
             android:exported="true"
             android:permission="android.permission.DUMP" />

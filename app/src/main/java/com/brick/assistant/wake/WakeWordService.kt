@@ -58,6 +58,8 @@ class WakeWordService : Service() {
         private const val SAMPLE_RATE = 16000
         private const val PHRASE = "hey brick"
         private const val MIN_CONFIDENCE = 0.6
+        /** Below this battery level (and not charging), "Hey Brick" pauses when the setting is on. */
+        private const val LOW_BATTERY = 15
 
         @Volatile var status: String = "Off"
             private set
@@ -166,6 +168,20 @@ class WakeWordService : Service() {
         val gate = SpeechGate()
         val pocket = PocketDetector(this).also { it.start() }
         fun pocketPause() = (application as com.brick.assistant.BrickApp).container.settings.current.pocketPause
+        // Low battery, checked every 30 seconds (cheap, but no need to ask ten times a second).
+        val batteries = getSystemService(android.os.BatteryManager::class.java)
+        var lowChecked = 0L
+        var low = false
+        fun lowBattery(): Boolean {
+            if (!(application as com.brick.assistant.BrickApp).container.settings.current.lowBatteryPause) return false
+            val now = SystemClock.elapsedRealtime()
+            if (lowChecked == 0L || now - lowChecked > 30_000) {
+                lowChecked = now
+                val level = batteries?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: 100
+                low = power.isPowerSaveMode || (level in 0 until LOW_BATTERY && batteries?.isCharging != true)
+            }
+            return low
+        }
         fun closeRecorder() {
             recorder?.let { runCatching { it.stop() }; it.release() }
             recorder = null
@@ -193,6 +209,16 @@ class WakeWordService : Service() {
                     else if (!power.isInteractive && !cpu.isHeld) cpu.acquire()
                     status = "Paused: the phone is in a pocket"
                     SystemClock.sleep(400)
+                    continue
+                }
+                // Battery saver or low battery: stop listening (and let the CPU sleep) until it's charged or saver is off.
+                if (lowBattery()) {
+                    closeRecorder()
+                    rec.reset()
+                    gate.reset()
+                    if (cpu.isHeld) cpu.release()
+                    status = "Paused: battery saver or low battery"
+                    SystemClock.sleep(2000)
                     continue
                 }
                 if (cpu.isHeld) cpu.release()

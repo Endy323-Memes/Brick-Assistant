@@ -88,6 +88,16 @@ sealed class Request(val category: Category?) {
     /** [explicit] = you asked to search ("search for", "look up", "google"); otherwise Brick only tries to answer. */
     data class Search(val query: String, val explicit: Boolean = false) : Request(Category.SEARCH)
     data class Math(val result: MathEvaluator.Result) : Request(Category.MATH)
+    /** "How many milliseconds in a second", "5 feet to inches". */
+    data class Convert(val conversion: Conversion) : Request(Category.MATH)
+    /** "How do you spell necessary". */
+    data class Spell(val word: String) : Request(Category.SEARCH)
+    /** Ratings, where to watch / buy / listen, and song credits ("what is dune rated", "who produced this song"). [title] null = the song playing now. */
+    data class MediaAsk(
+        val kind: MediaAskKind, val title: String?, val artist: String? = null, val video: LookupKind? = null,
+        val role: CreditRole = CreditRole.ALL, val instrument: String? = null, val free: Boolean = false,
+        val format: BuyFormat = BuyFormat.ANY, val service: String? = null, val rent: Boolean = false,
+    ) : Request(if (kind == MediaAskKind.LISTEN || kind == MediaAskKind.BUY_SONG || kind == MediaAskKind.CREDITS) Category.MUSIC else Category.SEARCH)
     data class Weather(
         val city: String?,
         val tomorrow: Boolean,
@@ -116,7 +126,8 @@ sealed class Request(val category: Category?) {
     /** Driver: apply a saved effect preset by name. [effect] is null when the user didn't say which effect. */
     data class EffectPreset(val effect: AudioEffect?, val preset: String) : Request(Category.MUSIC)
     /** Driver: download lyrics. [song] null = the song that is playing. */
-    data class Lyrics(val song: String?) : Request(Category.MUSIC)
+    /** [download] asks Driver to download and keep them; otherwise Brick shows them on its card. */
+    data class Lyrics(val song: String?, val artist: String? = null, val download: Boolean = false) : Request(Category.MUSIC)
     /** "I like this song": add what's playing to its app's likes (Driver favorites, Spotify Liked Songs...). */
     data object LikeSong : Request(Category.MUSIC)
     /** Driver: "what's playing?" */
@@ -133,9 +144,22 @@ sealed class Request(val category: Category?) {
     data class OpenApp(val name: String) : Request(Category.APPS)
     /** "What time is it (in Tokyo)" / "what's the date". */
     data class TellTime(val date: Boolean, val place: String?) : Request(Category.DEVICE)
+    /** "How many days until Christmas": [target] is null for a calendar event looked up when answering. */
+    data class Countdown(
+        val name: String,
+        val target: com.brick.assistant.brain.Countdown.Target?,
+        val unit: CountUnit,
+        val since: Boolean,
+        val query: String,
+        val whenAsk: Boolean = false,
+    ) : Request(Category.DEVICE)
     /** Flashlight, volume, ringer, Do Not Disturb, battery, brightness, Wi-Fi / Bluetooth. */
     /** [target]: for Bluetooth battery, which device ("watch", "headphones", "galaxy buds"); null = all. */
     data class Device(val op: DeviceOp, val percent: Int? = null, val target: String? = null) : Request(Category.DEVICE)
+    /** A phone setting: switch it ([on], null = flip or just show), its state, or where it is. [setting] null = all of them. */
+    data class PhoneSettingReq(val setting: PhoneSetting?, val on: Boolean? = null, val ask: SettingAsk = SettingAsk.SET, val open: Boolean = false) : Request(Category.DEVICE)
+    /** Smart home: lights and plugs ([target] as said), on/off, brightness, a color, or a home app to open. */
+    data class SmartHome(val target: String?, val on: Boolean? = null, val brightness: Int? = null, val color: String? = null, val app: HomeApp? = null) : Request(Category.DEVICE)
     data class Chat(val reply: String) : Request(Category.CHAT)
     /** "Add this song to my gym playlist": the playing app's playlist called [playlist]. */
     data class AddToPlaylist(val playlist: String) : Request(Category.MUSIC)
@@ -164,7 +188,7 @@ object IntentParser {
     private val trailingPolite = rx("[\\s,]+(?:please|for me|now|right now|thanks|thank you)$")
 
     /** Light clean-up that keeps letter case (names, message bodies). */
-    fun clean(raw: String): String {
+    fun clean(raw: String, numbers: Boolean = true): String {
         var s = raw.trim()
         s = s.replace(re("\\ba\\.\\s?m\\.?(?=\\s|$)", true), "am")
         s = s.replace(re("\\bp\\.\\s?m\\.?(?=\\s|$)", true), "pm")
@@ -174,7 +198,7 @@ object IntentParser {
         s = s.replace(re("\\s+"), " ").trim()
         // Typed shortcuts without apostrophes ("whats", "wheres", "hows") read like the spoken forms.
         s = s.replace(re("\\b(what|where|when|how|who|that|it)s\\b", true)) { "${it.groupValues[1]}'s" }
-        s = NumberWords.convert(s)
+        if (numbers) s = NumberWords.convert(s)
         s = s.replace(politePrefix, "").replace(trailingPolite, "").trim()
         return s
     }
@@ -292,9 +316,14 @@ object IntentParser {
 
         parseSetting(s)?.let { return it }
         parseVisualizer(s)?.let { return it }
+        Spelling.parse(s)?.let { return Request.Spell(it) }
+        Units.parse(s)?.let { return Request.Convert(it) }
+        MediaGuide.parse(s)?.let { return it }
         parseAlarm(s)?.let { return it }
         parseTime(s)?.let { return it }
         parseDevice(s)?.let { return it }
+        parseSmartHome(s)?.let { return it }
+        parsePhoneSetting(s)?.let { return it }
         parseNote(raw, s)?.let { return it }
         parseDiscord(raw)?.let { return it }
         parseReading(s)?.let { return it }
@@ -302,6 +331,7 @@ object IntentParser {
         parseStopwatch(s)?.let { return it }
         parseTimerControl(s)?.let { return it }
         parseTimer(s)?.let { return it }
+        Countdown.parse(s)?.let { return it }
         parseReminder(s)?.let { return it }
         parseCalendar(s)?.let { return it }
         parseText(s)?.let { return it }
@@ -329,8 +359,10 @@ object IntentParser {
         // Nothing matched exactly, but it's clearly about sky darkness ("bortle?", "light pollution tonight"):
         // answer that rather than searching the web.
         skyByKeywords(s)?.let { return it }
+        MediaGuide.loose(s)?.let { return it }
         val explicit = rx("^(?:search\\b|look\\s+up\\b|google\\b|find\\s+out\\b|search\\s+the\\s+web\\b|web\\s+search\\b|bing\\b)").containsMatchIn(s)
-        return Request.Search(searchQuery(s), explicit)
+        // Searched as said: "the twelve days of christmas", not "the 12 days of christmas".
+        return Request.Search(searchQuery(clean(raw, numbers = false)), explicit)
     }
 
     // ---------------------------------------------------------------- Alarm
@@ -1046,12 +1078,147 @@ object IntentParser {
         }
         if (rx("^(?:turn\\s+(?:the\\s+)?(?:screen\\s+)?brightness\\s+up|brightness up|make (?:the|my) screen brighter|brighter|increase (?:the )?brightness)$").matches(s)) return Request.Device(DeviceOp.BRIGHT_UP)
         if (rx("^(?:turn\\s+(?:the\\s+)?(?:screen\\s+)?brightness\\s+down|brightness down|make (?:the|my) screen (?:dimmer|darker)|dimmer|dim the screen|decrease (?:the )?brightness)$").matches(s)) return Request.Device(DeviceOp.BRIGHT_DOWN)
-        // Wi-Fi / Bluetooth
-        rx("^(?:turn|switch|toggle)\\s+(?:on\\s+|off\\s+)?(?:the\\s+|my\\s+)?(wi ?fi|wifi|wireless|bluetooth)(?:\\s+(?:on|off))?$|^(wi ?fi|wifi|bluetooth)\\s+(?:on|off|settings)$").find(s)?.let {
-            val w = it.groupValues[1].ifBlank { it.groupValues[2] }
-            return Request.Device(if (w.contains("blue", true)) DeviceOp.BLUETOOTH else DeviceOp.WIFI)
-        }
+        // Wi-Fi, Bluetooth and the other phone settings: parsePhoneSetting, which takes looser wording.
         return null
+    }
+
+    // ---- Loose wording for settings and smart home: the thing named anywhere, plus a word saying what to do.
+
+    private val OFF_WORDS = Regex(
+        "\\b(?:off|disable|disabled|deactivate|kill|exit|leave|quit|stop|end|no more|get rid of|get out of|out of|shut (?:off|down|it)|" +
+            "cut(?: off)?|pause|don't (?:want|need)|do not (?:want|need)|without|unplug|power down)\\b",
+    )
+    private val ON_WORDS = Regex(
+        "\\b(?:on|enable|enabled|activate|start|allow|use|go (?:into|in)|switch (?:to|into)|put (?:it |me |the phone |my phone )?(?:in|into|on)|" +
+            "need|want|give me|bring back|resume|unpause|connect|power up|fire up|light up)\\b",
+    )
+    private val TOGGLE_WORDS = Regex("\\b(?:toggle|flip|switch)\\b")
+    private val WHERE_WORDS = Regex(
+        "\\b(?:where(?:'s| is| are| do i| can i| would i| should i| in)|how (?:do|can|would|should|to) (?:i |you )?(?:find|open|reach|change|turn|switch|enable|disable|set|get to the)|" +
+            "how to (?:find|turn|switch|enable|disable|change)|which (?:menu|page|setting|screen)|path to|location of|show me where|navigate to the|find the .*setting)\\b",
+    )
+    private val STATUS_WORDS = Regex(
+        "^(?:is|are|was|am i|check|tell me if|do i have)\\b|\\b(?:status|state|is it on|is it off|currently)\\b|^what(?:'s| is) (?:my |the )?(?:current )?\\S+ (?:on|set to|at)\\b",
+    )
+    private val OPEN_WORDS = Regex("\\b(?:open|show|pull up|bring up|go to|take me to|launch|get me to|settings?|menu|page|panel|controls?|options)\\b")
+
+    /** Other requests that may mention a setting: "text mom my location", "remind me to turn off wifi", "play music on my speaker". */
+    private val NOT_SETTING = Regex(
+        "^(?:(?:hey |ok |okay )?brick[, ]+)?(?:text|message|send|reply|tell \\w+|call|phone|dial|email|remind|schedule|cancel my|delete|play|" +
+            "put on|listen to|shuffle|queue|note|take a note|write|search|google|look up|define|set (?:an? )?(?:alarm|timer|reminder))\\b|" +
+            "^(?:send|share) (?:my |your )?(?:location|current location)",
+    )
+
+    /** "what is NFC", "what does airplane mode do": a question about it, not a request to change it. */
+    private val DEFINITION = Regex("^(?:what|who) (?:is|are|does|do) (?:an? |the )?[a-z0-9 -]+? (?:mean|do|stand for|for)$|^(?:what|who) (?:is|are) (?:an? )?[a-z0-9 -]+$")
+
+    /**
+     * Phone settings in any wording: "kill the wifi", "can you put my phone in airplane mode", "I need my hotspot",
+     * "is NFC on", "where's the always on display setting", "how do I turn on quick share", "show me my phone
+     * settings". The setting's name can be anywhere (see [PhoneSetting.words] for what each one is called).
+     */
+    fun parsePhoneSetting(raw: String): Request? {
+        val s = raw.lowercase().replace(Regex("\\s+(?:please|for me|real quick|right now|now|thanks)$"), "").trim()
+        if (NOT_SETTING.containsMatchIn(s)) return null
+        // All of them: "show my phone settings", "quick settings", "control center".
+        if (rx("^(?:(?:show|open|pull up|bring up|give me|what are|check)\\s+)?(?:me\\s+)?(?:all\\s+)?(?:my|the)?\\s*(?:phone(?:'s)?|quick|device|system)\\s+(?:settings|toggles|controls|switches)(?:\\s+(?:panel|overview|page|menu))?$|" +
+                "^(?:control (?:center|centre)|quick panel|quick settings|settings overview|phone controls|all (?:my )?toggles)$").matches(s)) {
+            return Request.PhoneSettingReq(null, ask = SettingAsk.STATUS)
+        }
+        val setting = PhoneSetting.find(s) ?: return null
+        if (rx("\\bbrick\\b").containsMatchIn(s)) return null // Brick's own settings ("turn off hey brick")
+        val words = s.replace(setting.regex, " ")
+        // Weather, sky and privacy wording ("night sky report, hide my location") belong to those answers.
+        if (rx("\\b(?:weather|forecast|temperature|rain|snow|sky|stars?|bortle|bortal|milky way|sunset|sunrise|wind|humid\\w*|hide|obscure|fake|spoof|private|privately|decoy|mask|disguise|scramble|random|coords?|cords|coordinates)\\b").containsMatchIn(words)) return null
+        if (DEFINITION.matches(s) && !rx("\\b(?:my|on|off)\\b").containsMatchIn(s)) return null
+        // "rotation lock on" is auto rotate off; "light mode" is dark mode off.
+        val inverted = (setting == PhoneSetting.AUTO_ROTATE && rx("\\b(?:lock|portrait)\\b").containsMatchIn(s)) ||
+            (setting == PhoneSetting.DARK_MODE && rx("\\blight (?:mode|theme)\\b").containsMatchIn(s))
+        fun flip(v: Boolean?) = if (v != null && inverted) !v else v
+        if (WHERE_WORDS.containsMatchIn(s)) return Request.PhoneSettingReq(setting, ask = SettingAsk.WHERE)
+        // Sound mode and volume go to the existing controls, which know the details.
+        if (setting == PhoneSetting.SOUND_MODE) {
+            when {
+                rx("\\bvibrat").containsMatchIn(s) -> return Request.Device(DeviceOp.RING_VIBRATE)
+                rx("\\b(?:silent|silence|mute)\\b").containsMatchIn(s) && !OFF_WORDS.containsMatchIn(words) -> return Request.Device(DeviceOp.RING_SILENT)
+                rx("\\b(?:sound|ring|normal|loud)\\b").containsMatchIn(words) || OFF_WORDS.containsMatchIn(words) -> return Request.Device(DeviceOp.RING_NORMAL)
+            }
+        }
+        if (setting == PhoneSetting.VOLUME) {
+            rx("\\b(\\d{1,3})\\s*(?:percent|%)?").find(s)?.let { return Request.Device(DeviceOp.VOLUME_SET, it.groupValues[1].toInt().coerceIn(0, 100)) }
+            when {
+                rx("\\b(?:up|louder|raise|increase|bump|crank|higher|more)\\b").containsMatchIn(words) -> return Request.Device(DeviceOp.VOLUME_UP)
+                rx("\\b(?:down|quieter|softer|lower|decrease|reduce|less)\\b").containsMatchIn(words) -> return Request.Device(DeviceOp.VOLUME_DOWN)
+                rx("\\b(?:max|maximum|all the way up|full)\\b").containsMatchIn(words) -> return Request.Device(DeviceOp.VOLUME_MAX)
+                OFF_WORDS.containsMatchIn(words) || rx("\\bmute\\b").containsMatchIn(words) -> return Request.Device(DeviceOp.MUTE)
+            }
+        }
+        if (STATUS_WORDS.containsMatchIn(s) && !rx("^(?:can|could|would|will) you\\b").containsMatchIn(s)) {
+            return Request.PhoneSettingReq(setting, ask = SettingAsk.STATUS)
+        }
+        val off = OFF_WORDS.containsMatchIn(words)
+        val on = !off && ON_WORDS.containsMatchIn(words)
+        // "lock the screen rotation" / "unlock the rotation".
+        if (setting == PhoneSetting.AUTO_ROTATE && !off && !on) {
+            if (rx("\\bunlock\\b").containsMatchIn(s)) return Request.PhoneSettingReq(setting, true)
+            if (rx("\\block\\b").containsMatchIn(s)) return Request.PhoneSettingReq(setting, false)
+        }
+        return when {
+            off -> Request.PhoneSettingReq(setting, flip(false))
+            on -> Request.PhoneSettingReq(setting, flip(true))
+            // "switch audio to my headphones": the wording already says what to do.
+            setting == PhoneSetting.MEDIA_OUTPUT -> Request.PhoneSettingReq(setting, null)
+            TOGGLE_WORDS.containsMatchIn(words) -> Request.PhoneSettingReq(setting, null)
+            OPEN_WORDS.containsMatchIn(words) -> Request.PhoneSettingReq(setting, ask = SettingAsk.STATUS, open = true)
+            // Just the name ("airplane mode", "my hotspot"): show it with its switch.
+            words.split(' ').count { it.isNotBlank() && it !in setOf("my", "the", "a", "phone", "phone's", "mode", "setting", "can", "you", "hey") } == 0 ->
+                Request.PhoneSettingReq(setting, ask = SettingAsk.STATUS)
+            else -> null
+        }
+    }
+
+    private val HOME_THING = Regex(
+        "\\b(?:lights|lamps?|bulbs?|leds?|led strips?|light strips?|strip lights?|smart plugs?|plugs?|outlets?|fans?|govee|smart home|home devices|" +
+            "smart devices|my devices)\\b|\\b(?:the|my|all) (?:[a-z]+ ){0,2}light\\b(?! pollution| mode| theme| show)",
+    )
+
+    /**
+     * Smart home: "turn on the living room lights", "lights off", "kill the bedroom lamp", "dim the lights to 30",
+     * "make the lights blue", "is the desk lamp on", "show my smart home", "open Google Home".
+     */
+    fun parseSmartHome(raw: String): Request? {
+        val s = raw.lowercase().replace(Regex("\\s+(?:please|for me|real quick|right now|now)$"), "").trim()
+        if (NOT_SETTING.containsMatchIn(s)) return null
+        val app = HomeApp.named(s)
+        if (rx("^(?:open|launch|start|go to|pull up)\\s+(?:the\\s+)?(?:${HomeApp.entries.joinToString("|") { it.words }})(?:\\s+app)?$").matches(s)) {
+            return Request.SmartHome(null, app = app)
+        }
+        if (!HOME_THING.containsMatchIn(s) && app == null) return null
+        if (rx("\\b(?:flash ?light|torch|traffic light|light pollution|night sky|dark mode|light mode)\\b").containsMatchIn(s)) return null
+        if (rx("^(?:(?:show|open|check|what are)\\s+)?(?:me\\s+)?(?:my|the)?\\s*(?:smart home|home devices|smart devices|smart lights|govee(?: lights| devices)?|lights|devices)(?:\\s+status)?$").matches(s)) {
+            return Request.SmartHome(null, app = app)
+        }
+        val pct = rx("\\b(\\d{1,3})\\s*(?:percent|%)?(?:\\s+brightness)?\\b").find(s)?.groupValues?.get(1)?.toInt()?.coerceIn(1, 100)
+        val color = HomeColors.find(s)?.first
+        val dim = rx("\\b(?:dim|dimmer|darker|lower)\\b").containsMatchIn(s)
+        val bright = rx("\\b(?:brighter|brighten|full brightness|max(?:imum)? brightness)\\b").containsMatchIn(s)
+        val off = OFF_WORDS.containsMatchIn(s)
+        val on = !off && (ON_WORDS.containsMatchIn(s) || pct != null || color != null || bright)
+        if (!off && !on && !dim && !STATUS_WORDS.containsMatchIn(s)) return null
+        val target = s
+            .replace(Regex("\\b(?:can you|could you|would you|please|turn|switch|set|make|put|change|dim|brighten|kill|shut|cut|the|my|to|at|on|off|up|down|" +
+                "lights?|lamps?|bulbs?|leds?|strips?|plugs?|outlets?|fans?|all|of|in|percent|brightness|brighter|dimmer|color|colour|is|are|it|them|" +
+                "enable|disable|activate|deactivate|govee|smart|home|google|nest|devices?)\\b"), " ")
+            .replace(Regex("\\b\\d{1,3}\\b|%"), " ")
+            .let { t -> color?.let { t.replace(it, " ") } ?: t }
+            .replace(Regex("\\s+"), " ").trim().ifBlank { null }
+        return Request.SmartHome(
+            target,
+            on = if (off) false else if (on) true else null,
+            brightness = pct ?: if (dim) 25 else if (bright) 100 else null,
+            color = color,
+            app = app,
+        )
     }
 
     /**
@@ -1409,12 +1576,47 @@ object IntentParser {
         return Request.AddToPlaylist(name)
     }
 
+    private val lyricsCurrent = rx(
+        "^(?:this|that|it|this one|that one|this song|that song|the song|this track|that track|this tune|the current song|the current track|" +
+            "the song (?:that'?s |that is |)(?:playing|on)(?: now| right now)?|what'?s playing|what i'?m (?:listening to|playing)|the one playing|" +
+            "the song i'?m listening to|my song|the music)$",
+    )
+
+    /**
+     * "lyrics", "show me the lyrics", "what are the words to this song", "what is he saying", "sing along",
+     * "lyrics for blinding lights by the weeknd". "Download / save the lyrics" still goes to Driver.
+     */
     private fun parseLyrics(s: String): Request? {
-        val m = rx("^(?:(?:download|get|fetch|find|grab|pull|load|search for|look up|search)\\s+(?:me\\s+)?)?(?:the\\s+)?(?:synced\\s+|song\\s+)?lyrics(?:\\s+(?:for|to|of)\\s+(.+))?$").find(s)
-            ?: return null
-        val song = m.groupValues[1].trim()
-        val current = song.isEmpty() || rx("^(?:this|that|it|this song|that song|the song|this track|the current song|the song that's playing|what's playing)$").matches(song)
-        return Request.Lyrics(if (current) null else song)
+        val t = s.replace(rx("^(?:can you |could you |would you |please |hey |yo |brick )+"), "").replace(rx("\\s+(?:please|for me|now|right now|real quick)$"), "").trim()
+        val download = rx("^(?:download|save|store|keep)\\b|\\b(?:to|into|in) driver\\b").containsMatchIn(t) && rx("\\blyrics?\\b").containsMatchIn(t)
+        // What's being sung, with no "lyrics" word at all.
+        val sungNow = rx(
+            "^(?:what(?:'s| is| are)? (?:he|she|they|the singer|the artist|the band|this guy|this girl|this person|that guy|that girl) (?:saying|singing|rapping|sayin|singin)(?: here| right now| now)?" +
+                "|what (?:are|r) (?:the )?words(?: to| of| in)? (?:this|that|the) (?:song|track|tune|one)" +
+                "|what does (?:this|that|the) (?:song|track) say|(?:show|give|tell|read) me the words(?: to (?:this|that|the) (?:song|track))?" +
+                "|words to (?:this|that|the) (?:song|track)|the words|sing ?along(?: mode)?|karaoke(?: mode)?|(?:let'?s|lets) sing(?: along)?" +
+                "|what did (?:he|she|they) (?:just )?(?:say|sing))$",
+        )
+        if (sungNow.matches(t)) return Request.Lyrics(null)
+        if (!rx("\\blyrics?\\b|\\blyric sheet\\b").containsMatchIn(t)) return null
+        // Not about showing the words: "who wrote the lyrics" (credits), "lyrics meaning" (a search).
+        if (rx("\\b(?:who|meaning|mean|means|interpret|translate|translation|analy[sz]e|explain)\\b").containsMatchIn(t)) return null
+        // The song: whatever follows "for / to / of / from" ("lyrics to x by y"), or what comes before "lyrics" ("x lyrics").
+        var song = rx("\\blyrics?\\s+(?:for|to|of|from|on|in)\\s+(.+)$").find(t)?.groupValues?.get(1)
+            ?: rx("^(?:show me |get me |get |find |pull up |bring up |open |show |display |give me |what are |what'?s |look up |search for |search |download |save |store |keep )?(?:the )?(.+?)\\s+lyrics?$").find(t)?.groupValues?.get(1)
+            ?: ""
+        song = song.trim().replace(rx("\\s+(?:in|to|into|on|with|from) driver$|^driver$"), "").trim()
+        if (lyricsCurrent.matches(song)) return Request.Lyrics(null, download = download)
+        song = song
+            .replace(rx("^(?:the\\s+)?(?:synced|song|full|whole|complete|word synced|line synced|plain|timed)\\s+"), "")
+            .replace(rx("\\s+(?:synced|timed|word by word|line by line|with timing|on screen|up|again)$"), "")
+            .trim()
+        if (rx("^(?:show|get|find|pull up|bring up|open|display|give me|see|view|what are|read|the|me|some|any|synced|full|song|download|save|store|keep)$").matches(song)) song = ""
+        if (song.isEmpty() || lyricsCurrent.matches(song)) return Request.Lyrics(null, download = download)
+        // "x by y": the artist too.
+        val by = rx("^(.+?)\\s+by\\s+(.+)$").find(song)
+        return if (by != null) Request.Lyrics(by.groupValues[1].trim(), by.groupValues[2].trim(), download)
+        else Request.Lyrics(song, download = download)
     }
 
     private fun parseNowPlaying(s: String): Request? {

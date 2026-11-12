@@ -29,13 +29,13 @@ class VoiceEngine(
     private val appContext = context.applicationContext
     private val cacheDir = File(context.filesDir, "david_cache").apply {
         mkdirs()
-        // Older builds cached stitched lines at the original speed; drop those once.
-        listFiles()?.filter { !it.name.contains("_v2s") }?.forEach { it.delete() }
+        // Lines cached by older builds (the old word bank, no question rise) are dropped once.
+        listFiles()?.filter { !it.name.contains("_v3s") }?.forEach { it.delete() }
     }
 
     /** Cache file for [text] at the current speaking rate and custom-response speed. */
     private fun cacheFile(text: String, s: AppSettings) =
-        File(cacheDir, cacheKey(text, s.davidRate) + "_v2s" + (s.davidStitchSpeed * 100).roundToInt() + ".wav")
+        File(cacheDir, cacheKey(text, s.davidRate) + "_v3s" + (s.davidStitchSpeed * 100).roundToInt() + ".wav")
     private val tmpDir = File(context.cacheDir, "voice").apply { mkdirs() }
     private val tmpCounter = AtomicInteger()
     @Volatile private var serverDownUntil = 0L
@@ -71,6 +71,7 @@ class VoiceEngine(
         var cacheable = true
         var lastStart = -1
         var lastEnd = -1
+        var stitched = false
 
         // 1. Real David recording of the whole line (built-in responses).
         if (s.davidRate == 0) readAsset("david/${cacheKey(say, 0)}.wav")?.let { pcm = Wav.read(it) }
@@ -93,6 +94,7 @@ class VoiceEngine(
                 pcm = PcmAudio(Wsola.speed(it.audio.samples, it.audio.sampleRate, sp), it.audio.sampleRate)
                 lastStart = (it.lastWordStart / sp).toInt()
                 lastEnd = (it.lastWordEnd / sp).toInt()
+                stitched = true
             }
         }
 
@@ -102,6 +104,8 @@ class VoiceEngine(
             pcm = davidMatchPcm(say, s)
         }
         var audio = pcm ?: return@withContext null
+        // Questions end on a rise (stitched lines already rise on each question's last word).
+        if (!stitched && !interrupted && say.trimEnd().endsWith("?")) audio = RobotFx.questionRise(audio)
         if (interrupted) audio = DavidStitcher.cutOff(audio, lastStart, lastEnd)
 
         val out = if (cacheable) cached else tmpFile("david")
@@ -119,7 +123,7 @@ class VoiceEngine(
         val say = (if (interrupted) DavidStitcher.withoutDash(text) else text).trim()
         if (say.isBlank()) return null
         val voice = s.classicVoice.ifBlank { tts.preferredMaleVoice() }
-        val key = cacheKey("$voice|${s.classicRate}|${s.classicPitch}|${s.classicExpression}|$interrupted", 0) + cacheKey(say, 0).take(12)
+        val key = cacheKey("$voice|${s.classicRate}|${s.classicPitch}|${s.classicExpression}|$interrupted|rise", 0) + cacheKey(say, 0).take(12)
         classicDir.mkdirs()
         val cached = File(classicDir, "$key.wav")
         if (cached.exists() && cached.length() > 44) return Rendered(cached, false)
@@ -127,6 +131,7 @@ class VoiceEngine(
         if (!tts.synthesize(say, voice, s.classicPitch, s.classicRate, src)) return null
         var pcm = Wav.read(src) ?: return null
         pcm = RobotFx.calm(pcm, s.classicExpression, question = say.endsWith("?"))
+        if (say.endsWith("?") && !interrupted) pcm = RobotFx.questionRise(pcm)
         if (interrupted) pcm = RobotFx.cutEnd(pcm)
         Wav.write(cached, pcm)
         // Keep the cache small.
@@ -156,7 +161,10 @@ class VoiceEngine(
         }, rate)
     }
 
-    private val words: WordSource by lazy { AssetWordSource(appContext) }
+    // Real David words: the 16 kHz Opus bank.
+    private val words: WordSource by lazy {
+        AssetOpusWordSource(appContext)
+    }
 
     private fun readAsset(path: String): ByteArray? = try {
         appContext.assets.open(path).use { it.readBytes() }
@@ -247,7 +255,10 @@ class VoiceEngine(
             val out = tmpFile("unit")
             val voice = s.naturalVoice.ifBlank { tts.preferredFemaleVoice() }
             val say = if (DavidStitcher.endsInterrupted(text)) DavidStitcher.withoutDash(text) else text
-            return@withContext if (tts.synthesize(say, voice, 1f, s.naturalRate, out)) out else null
+            if (!tts.synthesize(say, voice, 1f, s.naturalRate, out)) return@withContext null
+            // Only touched for a question whose ending doesn't already rise (questionRise leaves those alone).
+            if (say.trimEnd().endsWith("?")) Wav.read(out)?.let { Wav.write(out, RobotFx.questionRise(it)) }
+            return@withContext out
         }
         val base: File
         if (s.robotUseDavidBase) {
@@ -261,13 +272,15 @@ class VoiceEngine(
         if (!s.robotFxEnabled) return@withContext base
         val pcm = Wav.read(base) ?: return@withContext base
         val out = tmpFile("robot")
-        Wav.write(out, RobotFx.process(pcm, s))
+        Wav.write(out, RobotFx.process(pcm, s, question = text.trimEnd().endsWith("?")))
         out
     }
 
     // ---------------------------------------------------------------- Playback
 
     suspend fun play(file: File) = player.play(file)
+    /** Stops the line playing now (the card's mute button). */
+    fun stopNow() = player.stopNow()
     fun beginSpeaking() = player.acquireFocus()
     fun endSpeaking() = player.releaseFocus()
 

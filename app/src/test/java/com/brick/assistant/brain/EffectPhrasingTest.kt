@@ -25,7 +25,7 @@ class EffectPhrasingTest {
     fun presetsAndLyricsWithDriverMentioned() {
         assertEquals(Request.EffectPreset(null, "cathedral"), IntentParser.parse("use the cathedral preset in driver"))
         assertEquals(Request.EffectPreset(AudioEffect.REVERB, "cathedral"), IntentParser.parse("set the reverb to cathedral in driver"))
-        assertEquals(Request.Lyrics(null), IntentParser.parse("download the lyrics in driver"))
+        assertEquals(Request.Lyrics(null, download = true), IntentParser.parse("download the lyrics in driver"))
         assertTrue(IntentParser.parse("turn on bass boost") is Request.Chat)
     }
 

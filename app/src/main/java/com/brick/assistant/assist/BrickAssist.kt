@@ -31,6 +31,23 @@ class BrickVoiceInteractionService : VoiceInteractionService() {
         /** Set while Brick is the active digital assistant (used by the Hey Brick wake word). */
         @Volatile var active: BrickVoiceInteractionService? = null
             private set
+
+        /** Extra on a session: run this settings voice action (airplane mode, power saving...) instead of opening the card. */
+        const val EXTRA_VOICE_ACTION = "brick_voice_action"
+
+        /**
+         * Runs one of Android's assistant-only settings actions ([intent] has CATEGORY_VOICE) through a short session.
+         * False when Brick isn't the active digital assistant.
+         */
+        fun runVoiceAction(intent: Intent): Boolean {
+            val s = active ?: return false
+            return try {
+                s.showSession(Bundle().apply { putParcelable(EXTRA_VOICE_ACTION, intent) }, 0)
+                true
+            } catch (_: Exception) {
+                false
+            }
+        }
     }
 }
 
@@ -45,6 +62,15 @@ class BrickSessionService : VoiceInteractionSessionService() {
 class BrickSession(context: Context) : VoiceInteractionSession(context) {
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
+        @Suppress("DEPRECATION")
+        val action = args?.getParcelable<Intent>(BrickVoiceInteractionService.EXTRA_VOICE_ACTION)
+        if (action != null) {
+            // A settings switch Android only allows the assistant (airplane mode, power saving, Do Not Disturb).
+            // The settings screen answers through this session, then it closes.
+            try { startVoiceActivity(action) } catch (_: Exception) { hide() }
+            postDelayedHide()
+            return
+        }
         val intent = Intent(context, AssistEntryActivity::class.java)
             .putExtra(AssistEntryActivity.EXTRA_SOURCE, args?.getString(AssistEntryActivity.EXTRA_SOURCE) ?: "digital assistant")
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
@@ -54,6 +80,17 @@ class BrickSession(context: Context) : VoiceInteractionSession(context) {
             try { context.startActivity(intent) } catch (_: Exception) {}
         }
         hide()
+    }
+
+    // The settings voice screens ask to confirm and report back; Brick already asked, so it agrees and closes.
+    override fun onRequestConfirmation(request: VoiceInteractionSession.ConfirmationRequest) { request.sendConfirmationResult(true, null) }
+    override fun onRequestCompleteVoice(request: VoiceInteractionSession.CompleteVoiceRequest) { request.sendCompleteResult(null); hide() }
+    override fun onRequestAbortVoice(request: VoiceInteractionSession.AbortVoiceRequest) { request.sendAbortResult(null); hide() }
+    override fun onRequestPickOption(request: VoiceInteractionSession.PickOptionRequest) { request.sendPickOptionResult(request.options.take(1).toTypedArray(), null); hide() }
+
+    /** In case the settings screen never answers. */
+    private fun postDelayedHide() {
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ try { hide() } catch (_: Exception) { } }, 4000)
     }
 }
 /**

@@ -4,68 +4,11 @@ import com.brick.assistant.brain.Patterns
 import kotlin.math.abs
 import kotlin.math.sqrt
 
-/** Source of real David word recordings (assets on the phone, files in tests). */
+/** Source of real David word recordings (the Opus bank on the phone, a stand-in in tests). */
 interface WordSource {
     val sampleRate: Int
     fun contains(word: String): Boolean
     fun get(word: String): FloatArray?
-}
-
-/**
- * Word library reader shared by the Android asset source and tests: one IMA ADPCM blob
- * (4 bits per sample, low nibble first, each word starting from predictor 0 / step index 0)
- * plus index.tsv lines of "word, byte offset, sample count".
- */
-abstract class AdpcmWordSource : WordSource {
-    override val sampleRate = 22050
-    private val index: Map<String, LongArray> by lazy {
-        readIndex().lineSequence().mapNotNull { line ->
-            val p = line.split('\t')
-            if (p.size == 3) p[0] to longArrayOf(p[1].toLong(), p[2].toLong()) else null
-        }.toMap()
-    }
-
-    protected abstract fun readIndex(): String
-    protected abstract fun readBytes(offset: Long, length: Int): ByteArray?
-
-    override fun contains(word: String) = word in index
-
-    override fun get(word: String): FloatArray? {
-        val e = index[word] ?: return null
-        val samples = e[1].toInt()
-        val b = readBytes(e[0], (samples + 1) / 2) ?: return null
-        return decode(b, samples)
-    }
-
-    companion object {
-        private val STEPS = intArrayOf(
-            7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97,
-            107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796,
-            876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871,
-            5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623,
-            27086, 29794, 32767,
-        )
-        private val INDEX = intArrayOf(-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8)
-
-        fun decode(b: ByteArray, samples: Int): FloatArray {
-            val out = FloatArray(samples)
-            var pred = 0
-            var idx = 0
-            for (i in 0 until samples) {
-                val byte = b[i shr 1].toInt() and 0xFF
-                val code = if (i and 1 == 0) byte and 0x0F else byte shr 4
-                val step = STEPS[idx]
-                var vp = step shr 3
-                if (code and 4 != 0) vp += step
-                if (code and 2 != 0) vp += step shr 1
-                if (code and 1 != 0) vp += step shr 2
-                pred = (if (code and 8 != 0) pred - vp else pred + vp).coerceIn(-32768, 32767)
-                idx = (idx + INDEX[code]).coerceIn(0, 88)
-                out[i] = pred / 32768f
-            }
-            return out
-        }
-    }
 }
 
 /**
@@ -166,13 +109,15 @@ object DavidStitcher {
             val trk = tracks[i]
             if (base != null && m != null && trk != null) {
                 val goal = when {
-                    endsSentence && question -> base * 1.2f
+                    endsSentence && question -> base // level here; it glides up just below
                     endsSentence -> base * 0.9f
                     else -> base * (1.05f - 0.1f * pos)
                 }
                 val factor = (goal / m).coerceIn(0.8f, 1.25f)
                 if (abs(factor - 1f) > 0.03f) clip = Psola.shift(clip, sr, trk) { factor }
             }
+            // A question's last word climbs through the word, the way people ask ("...the details?").
+            if (endsSentence && question) clip = RobotFx.questionRise(PcmAudio(clip, sr), from = 0).samples
             // Function words are said quickly.
             if (light && clip.size > sr / 8) clip = Wsola.speed(clip, sr, 1.3f)
 

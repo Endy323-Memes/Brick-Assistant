@@ -58,6 +58,8 @@ class AssistEntryActivity : Activity() {
         }
         // Anything that opens another app (Maps, the dialer, Messages...) waits until you unlock.
         container.assistant.handOffGate = { run -> runUnlocked(run) }
+        // A new card starts with both voices on (the mute button lasts until the card closes).
+        container.assistant.setMuted(false, false)
         @Suppress("DEPRECATION")
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or WindowManager.LayoutParams.SOFT_INPUT_STATE_HIDDEN)
         window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
@@ -104,6 +106,7 @@ class AssistEntryActivity : Activity() {
         card.onStartTyping = { controller?.startTyping() }
         card.onStartTalking = { if (hasPermission(Manifest.permission.RECORD_AUDIO)) controller?.startTalking() }
         card.onTyped = { t -> controller?.submitTyped(t) }
+        card.onMute = { brick, unit -> (application as BrickApp).container.assistant.setMuted(brick, unit) }
         card.setOnClickListener {
             val c = controller
             if (card.typing) return@setOnClickListener
@@ -429,6 +432,7 @@ class AssistEntryActivity : Activity() {
         com.brick.assistant.optic.OpticBridge.busy(this, "card", false)
         val assistant = (application as BrickApp).container.assistant
         if (assistant.handOffGate != null && !isChangingConfigurations) assistant.handOffGate = null
+        if (!isChangingConfigurations) assistant.setMuted(false, false)
         controller?.destroy()
         controller = null
         super.onDestroy()

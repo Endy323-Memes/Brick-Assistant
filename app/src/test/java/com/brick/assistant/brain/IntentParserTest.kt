@@ -74,9 +74,9 @@ class IntentParserTest {
 
     @Test
     fun driverLyricsAndNowPlaying() {
-        assertEquals(Request.Lyrics(null), parse<Request.Lyrics>("download lyrics"))
+        assertEquals(Request.Lyrics(null, download = true), parse<Request.Lyrics>("download lyrics"))
         assertEquals(Request.Lyrics(null), parse<Request.Lyrics>("get the lyrics for this song"))
-        assertEquals(Request.Lyrics("Starblessed"), parse<Request.Lyrics>("download the lyrics for Starblessed"))
+        assertEquals(Request.Lyrics("Starblessed", download = true), parse<Request.Lyrics>("download the lyrics for Starblessed"))
         assertTrue(IntentParser.parse("what's playing") is Request.NowPlaying)
         assertTrue(IntentParser.parse("what song is this?") is Request.NowPlaying)
     }

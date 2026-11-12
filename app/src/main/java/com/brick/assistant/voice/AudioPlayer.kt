@@ -46,22 +46,35 @@ class AudioPlayer(context: Context) {
 
     suspend fun play(file: File) = playWith { mp -> mp.setDataSource(file.absolutePath) }
 
+    /** Ends what's playing now (the mute button); the waiting [play] call returns as if it finished. */
+    @Volatile private var stopCurrent: (() -> Unit)? = null
+
+    fun stopNow() {
+        val s = stopCurrent ?: return
+        android.os.Handler(android.os.Looper.getMainLooper()).post(s)
+    }
+
     private suspend fun playWith(source: (MediaPlayer) -> Unit) = withContext(Dispatchers.Main) {
         suspendCancellableCoroutine<Unit> { cont ->
             val mp = MediaPlayer()
             var released = false
             var viz: android.media.audiofx.Visualizer? = null
+            var mine: (() -> Unit)? = null
             fun release() {
                 if (released) return
                 released = true
                 try { viz?.enabled = false; viz?.release() } catch (_: Exception) {}
                 outputLevel = 0f
+                if (stopCurrent === mine) stopCurrent = null
                 try { mp.release() } catch (_: Exception) {}
             }
             fun finish() {
                 release()
                 if (cont.isActive) cont.resume(Unit)
             }
+            val stop: () -> Unit = { try { if (!released) mp.stop() } catch (_: Exception) {}; finish() }
+            mine = stop
+            stopCurrent = stop
             mp.setAudioAttributes(attrs)
             mp.setOnCompletionListener { finish() }
             mp.setOnErrorListener { _, _, _ -> finish(); true }

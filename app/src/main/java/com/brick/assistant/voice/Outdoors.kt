@@ -12,7 +12,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 
 /**
- * "Quiet outdoors": when the ambient light says you're outside, Brick answers in text only. The light sensor is
+ * "Quiet When": in the dark (or during the day), by the ambient light, Brick answers in text only. The light sensor is
  * read once per request (a few hundred milliseconds at most), never kept running, so it costs no battery.
  */
 object Outdoors {
@@ -45,10 +45,17 @@ object Outdoors {
         return am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { it.type in private }
     }
 
-    /** True when Brick should stay silent: the setting is on, it's bright enough to be outdoors, and no headphones. */
-    suspend fun quiet(context: Context, enabled: Boolean, thresholdLux: Int): Boolean {
-        if (!enabled || headphones(context)) return false
+    /**
+     * True when Brick should stay silent: no headphones, and either [dark] is on and the light is below
+     * [thresholdLux], or [day] is on and it is at or above it.
+     */
+    suspend fun quiet(context: Context, dark: Boolean, day: Boolean, thresholdLux: Int): Boolean {
+        if (!dark && !day || headphones(context)) return false
         val lux = lux(context) ?: return false
-        return lux >= thresholdLux
+        return quietAt(lux, dark, day, thresholdLux)
     }
+
+    /** The rule [quiet] applies to one reading: dark means below the threshold, day means at or above it. */
+    fun quietAt(lux: Float, dark: Boolean, day: Boolean, thresholdLux: Int): Boolean =
+        if (lux >= thresholdLux) day else dark
 }

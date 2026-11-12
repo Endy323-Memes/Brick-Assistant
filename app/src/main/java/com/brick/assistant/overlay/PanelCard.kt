@@ -54,6 +54,7 @@ class PanelCard(context: Context) : FrameLayout(context) {
         visibility = View.GONE
     }
     private val controlsBox = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+    private val lyricsView = LyricsView(context).apply { visibility = View.GONE }
     private val column = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
 
     /** Called when you touch the card (a switch, slider or button), so the card stays up instead of closing. */
@@ -80,6 +81,7 @@ class PanelCard(context: Context) : FrameLayout(context) {
         }
         column.addView(image, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = (10 * d).toInt() })
         column.addView(scroller, LinearLayout.LayoutParams(-1, -2))
+        column.addView(lyricsView, LinearLayout.LayoutParams(-1, -2).apply { topMargin = (6 * d).toInt() })
         column.addView(controlsBox, LinearLayout.LayoutParams(-1, -2))
         // A tall readout (picture, long answer, controls) scrolls inside the card instead of running off the screen.
         val vertical = android.widget.ScrollView(context).apply { isVerticalScrollBarEnabled = false; addView(column) }
@@ -107,6 +109,7 @@ class PanelCard(context: Context) : FrameLayout(context) {
         text.text = color(readout.text)
         showImage(readout.image)
         buildControls(readout.controls)
+        showLyrics(readout)
         if (visibility != View.VISIBLE) {
             visibility = View.VISIBLE
             alpha = 0f
@@ -122,12 +125,20 @@ class PanelCard(context: Context) : FrameLayout(context) {
         val sameText = current?.text == r.text
         current = r
         if (!sameText) text.text = color(r.text) // a tick with nothing new doesn't relayout
+        showLyrics(r)
         if (r.controls.size == bound.size && r.controls.indices.all { r.controls[it]::class == bound[it].control::class }) {
             r.controls.forEachIndexed { i, c -> bound[i].rebind(c) }
         } else {
             buildControls(r.controls)
         }
         if (r.live && !wasLive) { removeCallbacks(ticker); postDelayed(ticker, TICK_MS) }
+    }
+
+    private fun showLyrics(r: Readout) {
+        val l = r.lyrics
+        if (l == null) { lyricsView.visibility = View.GONE; return }
+        lyricsView.bind(l)
+        lyricsView.visibility = View.VISIBLE
     }
 
     /** After a control: show what changed (state takes a moment to settle, e.g. the volume). */

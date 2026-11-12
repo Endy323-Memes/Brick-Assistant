@@ -24,7 +24,7 @@ interface AssistUi {
     fun setOutputLevel(source: () -> Float) {}
     /** A terminal readout under the answer (the night sky panel), or null to clear it. */
     fun setPanel(readout: com.brick.assistant.brain.Readout?) {}
-    /** Answering in text only (quiet outdoors): the card says so. */
+    /** Answering in text only (Quiet When): the card says so. */
     fun setQuiet(on: Boolean) {}
 }
 
@@ -164,6 +164,7 @@ class AssistController(
         job = scope.launch {
             var lastDavid: String? = null
             var panel = false
+            var lyrics = false
             var answerChars = 0
             val forTopic = topic
             topic = null
@@ -171,7 +172,7 @@ class AssistController(
                 container.assistant.handle(text, forTopic) { e ->
                     container.log.add(e)
                     ui.setQuiet(container.assistant.lastTextOnly)
-                    if (e.panel) { panel = true; ui.setPanel(e.readout ?: com.brick.assistant.brain.Readout(e.text)); return@handle }
+                    if (e.panel) { panel = true; if (e.readout?.lyrics != null) lyrics = true; ui.setPanel(e.readout ?: com.brick.assistant.brain.Readout(e.text)); return@handle }
                     if (e.speaker == Speaker.DAVID || e.speaker == Speaker.ROBOT) answerChars += e.text.length
                     when (e.speaker) {
                         Speaker.DAVID -> { lastDavid = e.text; ui.setState(PulseView.Mode.DAVID, e.text, text) }
@@ -181,6 +182,8 @@ class AssistController(
                 }
                 // Typing: the card stays up for the answer or the next request (tap outside to close).
                 if (typing) return@launch
+                // Lyrics: the card stays up while you read along (tap outside to close).
+                if (lyrics) return@launch
                 // Brick asked a yes-or-no question (e.g. "Send this text?"): listen for the answer.
                 if (container.assistant.awaitingConfirmation) {
                     start()

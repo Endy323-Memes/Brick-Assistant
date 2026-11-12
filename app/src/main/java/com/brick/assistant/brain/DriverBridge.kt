@@ -122,6 +122,9 @@ object DriverBridge {
 
     fun lyrics(song: String?) = command("lyrics") { putString("query", song.orEmpty()) }
 
+    /** Read-only: the lyrics Driver already has for a song, as LRC text (needs a Driver that knows "get_lyrics"). */
+    fun getLyrics(title: String, artist: String) = command("get_lyrics") { putString("query", title); putString("artist", artist) }
+
     fun nowPlaying() = command("now_playing")
 
     /**

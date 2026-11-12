@@ -47,10 +47,10 @@ class AppContainer(val context: Context) {
     val actions = Actions(context, settings)
     val assistant = Assistant(responses, voice, actions).apply {
         onBrand = { b -> if (settings.current.brandGlow && !actions.inCar) com.brick.assistant.overlay.BrandOverlay.play(context, b) }
-        // Quiet outdoors: bright light (and no headphones) means text only. Never in the car.
+        // Quiet When: dark (or daylight, by the setting) and no headphones means text only. Never in the car.
         textOnly = {
             val s = settings.current
-            !actions.inCar && com.brick.assistant.voice.Outdoors.quiet(context, s.quietOutdoors, s.outdoorLux)
+            !actions.inCar && com.brick.assistant.voice.Outdoors.quiet(context, s.quietDark, s.quietDay, s.outdoorLux)
         }
     }
     /** Conversation history shared by the app screen and the floating overlay. */

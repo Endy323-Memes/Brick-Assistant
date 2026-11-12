@@ -3,6 +3,8 @@ package com.brick.assistant.brain
 import android.Manifest
 import android.app.SearchManager
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -64,6 +66,16 @@ class Confirmation(
 )
 
 class Actions(private val context: Context, private val settings: SettingsStore) {
+    private object Wording {
+        /** Requests worded as something to do, which a lookup can't answer. */
+        val COMMAND = Regex(
+            "^(?:order|make|buy|book|reserve|send|turn|set|change|switch|delete|remove|add|start|stop|cancel|pay|transfer|" +
+                "schedule|move|install|uninstall|download|upload|record|take|share|post|email|message|text|clean|cook|fix|" +
+                "write|draw|create|lock|unlock|close|enable|disable|connect|disconnect|charge|update|reset|restart|reboot|go|bring|get me)\b",
+            RegexOption.IGNORE_CASE,
+        )
+    }
+
     /** The infographic for each kind of answer. */
     private val info = Infographics(context)
 
@@ -311,13 +323,25 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         const val SPOTIFY_PACKAGE = "com.spotify.music"
     }
 
-    suspend fun prepare(req: Request): ActionResult = try {
+    /** Runs [req]. Every answer comes with a card: its own, or a summary of the request and answer (see [withCard]). */
+    suspend fun prepare(req: Request): ActionResult = withCard(req, prepareInner(req))
+
+    /** Gives [r] a summary card when it has none (errors, directions, apps, YouTube, notes, small talk...). */
+    private fun withCard(req: Request, r: ActionResult): ActionResult {
+        if (r.readout != null || r.display != null || r.robotLine.isBlank()) return r
+        return ActionResult(r.robotLine, r.confirm, r.returnToCard, r.navigateTo, r.dictate, r.voice, null, info.summary(req, r.robotLine, r.after), r.after)
+    }
+
+    private suspend fun prepareInner(req: Request): ActionResult = try {
         brand = null
         when (req) {
             is Request.Chat -> ActionResult(req.reply)
             is Request.OpenApp -> openApp(req)
             is Request.TellTime -> tellTime(req)
+            is Request.Countdown -> countdown(req)
             is Request.Device -> device(req)
+            is Request.PhoneSettingReq -> phoneSetting(req)
+            is Request.SmartHome -> smartHome(req)
             is Request.Note -> note(req)
             is Request.ReadNotifications -> readNotifications(req)
             is Request.ReadCalendar -> readCalendar(req)
@@ -338,6 +362,9 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             is Request.Call -> call(req)
             is Request.Search -> search(req)
             is Request.Math -> math(req)
+            is Request.Convert -> ActionResult(req.conversion.spoken, readout = info.conversion(req.conversion))
+            is Request.Spell -> spell(req)
+            is Request.MediaAsk -> media(req)
             is Request.Weather -> weather(req)
             is Request.Music -> music(req)
             is Request.Effect -> effects(req)
@@ -345,10 +372,10 @@ class Actions(private val context: Context, private val settings: SettingsStore)
                 DriverBridge.preset(req.effect, req.preset),
                 openingLine = "Opening Driver and applying the ${req.preset} preset.",
             )
-            is Request.Lyrics -> driver(
+            is Request.Lyrics -> if (req.download) driver(
                 DriverBridge.lyrics(req.song),
                 openingLine = "Opening Driver to download lyrics" + (req.song?.let { " for $it." } ?: "."),
-            )
+            ) else showLyrics(req)
             Request.NowPlaying -> driver(DriverBridge.nowPlaying(), openingLine = null)
             Request.LikeSong -> ActionResult(com.brick.assistant.media.LikeSong.like(context))
             is Request.AddToPlaylist -> ActionResult(com.brick.assistant.media.LikeSong.addToPlaylist(context, req.playlist))
@@ -384,6 +411,19 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         return ActionResult("Opening ${app.label}.") { launch(intent) }
     }
 
+    /** Days until (or since) a holiday, date, time or calendar event; anything without a date is searched. */
+    private suspend fun countdown(req: Request.Countdown): ActionResult {
+        var t = req.target
+        if (t == null && CalendarReader.canRead(context)) {
+            CalendarReader.find(context, req.name, req.since)?.let { e ->
+                val at = java.time.Instant.ofEpochMilli(e.begin).atZone(ZoneId.systemDefault()).toLocalDateTime()
+                t = Countdown.Target(e.title, at.toLocalDate(), if (e.allDay) null else at.toLocalTime(), event = true)
+            }
+        }
+        val target = t ?: return search(Request.Search(req.query))
+        return ActionResult(Countdown.speak(target, req.unit, req.since, req.whenAsk), readout = info.countdown(target, req.since))
+    }
+
     private fun tellTime(req: Request.TellTime): ActionResult {
         if (req.date) return ActionResult(Clock.speakDate(), readout = info.date())
         val place = req.place
@@ -392,6 +432,129 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             return ActionResult(Clock.speakTime(java.time.ZonedDateTime.now(zone), place), readout = info.time(zone, place))
         }
         return ActionResult(Clock.speakTime(), readout = info.time(ZoneId.systemDefault(), null))
+    }
+
+    // ---- Phone settings and smart home
+
+    /** How a setting's name sits in a sentence: "airplane mode", but "Wi-Fi", "NFC", "Quick Share". */
+    private fun spoken(s: PhoneSetting) = if (s.title.drop(1).any { it.isUpperCase() } || s in setOf(PhoneSetting.BLUETOOTH, PhoneSetting.QUICK_SHARE))
+        s.title else s.title.lowercase()
+
+    private fun phoneSetting(req: Request.PhoneSettingReq): ActionResult {
+        val st = req.setting ?: return ActionResult("Here are your phone's settings.", readout = info.phoneSettings())
+        val card = info.phoneSetting(st)
+        val name = spoken(st)
+        val Name = name.replaceFirstChar { it.uppercase() }
+        val state = PhoneSettings.isOn(context, st)
+        fun opened(line: String) = ActionResult(line, readout = card) { PhoneSettings.open(context, st) }
+        when (req.ask) {
+            SettingAsk.WHERE -> return ActionResult(
+                "It's in ${st.spokenPath}." + (st.quick?.let { " It's also a tile in the quick panel." } ?: ""),
+                readout = card,
+            )
+            SettingAsk.STATUS -> {
+                if (req.open) return opened("Opening $name.")
+                return ActionResult(
+                    when (state) {
+                        true -> "$Name is on."
+                        false -> "$Name is off."
+                        null -> "$Name: ${PhoneSettings.stateText(context, st)}."
+                    },
+                    readout = card,
+                )
+            }
+            SettingAsk.SET -> Unit
+        }
+        val target = req.on ?: state?.let { !it }
+        if (target != null && state == target) return ActionResult("$Name is already ${if (target) "on" else "off"}.", readout = card)
+        val word = if (target == true) "on" else "off"
+        return when (st.reach) {
+            SettingReach.DIRECT -> when {
+                target == null -> opened("Here's $name.")
+                st == PhoneSetting.DND && PhoneSettings.setDirect(context, st, target) -> ActionResult("Do Not Disturb is $word.", readout = info.phoneSetting(st))
+                st == PhoneSetting.DND -> assistantSwitch(st, target, card)
+                !PhoneSettings.canWrite(context) -> ActionResult(
+                    "I need permission to change system settings for that. Allow it for Brick, then ask again.", readout = card,
+                ) { launch(PhoneSettings.writePermission(context)) }
+                PhoneSettings.setDirect(context, st, target) -> ActionResult("$Name $word.", readout = info.phoneSetting(st))
+                else -> opened("I couldn't change $name, so here's the setting.")
+            }
+            SettingReach.ASSISTANT -> if (target == null) opened("Here's $name.") else assistantSwitch(st, target, card)
+            SettingReach.OPEN -> when {
+                st == PhoneSetting.BLUETOOTH && target == true && PhoneSettings.requestBluetoothOn(context) ->
+                    ActionResult("Tap Allow to turn on Bluetooth.", readout = card)
+                st == PhoneSetting.MEDIA_OUTPUT -> opened("Pick where the sound should play.")
+                st == PhoneSetting.QUICK_SHARE || st == PhoneSetting.AOD || st == PhoneSetting.DARK_MODE || st == PhoneSetting.HOTSPOT ->
+                    opened("Android doesn't let apps switch $name, so here's the setting.")
+                else -> opened("Android doesn't let apps switch $name, so here's the panel.")
+            }
+        }
+    }
+
+    /** Airplane mode, power saving or Do Not Disturb through the assistant session; the setting's page otherwise. */
+    private fun assistantSwitch(st: PhoneSetting, on: Boolean, card: Readout): ActionResult {
+        val intent = PhoneSettings.assistantIntent(st, on)
+        if (intent != null && com.brick.assistant.assist.BrickVoiceInteractionService.runVoiceAction(intent)) {
+            return ActionResult("Turning ${if (on) "on" else "off"} ${spoken(st)}.", readout = card)
+        }
+        return ActionResult(
+            "Only the default digital assistant can switch ${spoken(st)}. Make Brick your digital assistant, or use this setting.",
+            readout = card,
+        ) { PhoneSettings.open(context, st) }
+    }
+
+    private suspend fun smartHome(req: Request.SmartHome): ActionResult {
+        val key = settings.current.goveeKey
+        val wantsChange = req.on != null || req.brightness != null || req.color != null
+        val app = req.app
+        // "Open Google Home", or a device in an app Brick can't switch.
+        if (app != null && (app != HomeApp.GOVEE || !wantsChange || key.isBlank())) {
+            val line = when {
+                !app.installed(context) -> "${app.label} isn't installed."
+                !wantsChange -> "Opening ${app.label}."
+                app == HomeApp.GOVEE -> "Add your Govee API key in Brick's settings, under Smart home, and I can switch Govee lights myself. Here's Govee Home."
+                else -> "${app.label} doesn't let other apps switch its devices, so here's ${app.label}."
+            }
+            return ActionResult(line, readout = info.smartHome(key, Govee.devices)) { app.open(context) }
+        }
+        if (key.isBlank()) {
+            val fallback = HomeApp.entries.firstOrNull { it.installed(context) }
+            val line = "I can switch Govee lights once you add a Govee API key in Brick's settings, under Smart home." +
+                (fallback?.let { " Here's ${it.label}." } ?: "")
+            return ActionResult(line, readout = info.smartHome(key, emptyList())) { fallback?.open(context) }
+        }
+        val list = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { Govee.load(key) }
+            ?: return ActionResult("Govee didn't accept the API key. Check it in Brick's settings, under Smart home.", readout = info.smartHome(key, emptyList()))
+        if (list.isEmpty()) return ActionResult("I don't see any Govee lights on your account.", readout = info.smartHome(key, list))
+        val found = Govee.match(req.target, list)
+        if (found.isEmpty()) return ActionResult("I can't find a light called ${req.target}.", readout = info.smartHome(key, list))
+        val names = found.map { it.name }.let { n -> if (n.size <= 2) n.joinToString(" and ") else n.dropLast(1).joinToString(", ") + ", and " + n.last() }
+        val all = req.target == null && found.size > 1
+        val what = if (all) "the lights" else names
+        if (!wantsChange) {
+            val onCount = found.count { it.on == true }
+            val line = if (found.size == 1) "$names is ${if (found[0].on == true) "on" else "off"}." else "$onCount of ${found.size} lights are on."
+            return ActionResult(line, readout = info.smartHome(key, list, found))
+        }
+        val color = req.color?.let { c -> HomeColors.named[c]?.let { c to it } }
+        val ok = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            found.count { d ->
+                when {
+                    req.on == false -> Govee.power(key, d, false)
+                    color != null -> Govee.power(key, d, true) && Govee.color(key, d, color.second)
+                    req.brightness != null -> (d.on == true || Govee.power(key, d, true)) && Govee.brightness(key, d, req.brightness)
+                    else -> Govee.power(key, d, true)
+                }
+            }
+        }
+        val line = when {
+            ok == 0 -> "Govee didn't answer, so nothing changed."
+            req.on == false -> "Turned off $what."
+            color != null -> "${what.replaceFirstChar { it.uppercase() }} ${if (all || found.size > 1) "are" else "is"} ${color.first} now."
+            req.brightness != null -> "Set $what to ${req.brightness} percent."
+            else -> "Turned on $what."
+        } + if (ok in 1 until found.size) " ${found.size - ok} didn't answer." else ""
+        return ActionResult(line, readout = info.smartHome(key, list, found))
     }
 
     private fun device(req: Request.Device): ActionResult = when (req.op) {
@@ -1131,10 +1294,26 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=${Uri.encode(req.query)}")))
             Unit
         }
+        // Someone or something with a page (an actor, a movie, a show, an app, a company...): look it up by kind,
+        // with its facts. "what is photosynthesis"-style questions keep the quick answer first.
+        val lq = Lookup.understand(req.query)
+        if (Lookup.isEntityLookup(req.query, lq) || req.explicit) {
+            Lookup.find(lq)?.let { return lookupResult(req, it, openBrowser) }
+        }
         if (!req.explicit) {
             // Not asked to search: answer a question directly if possible, never open a web search.
-            if (!question) return ActionResult("I can't do that yet.")
-            val a = SearchService.answer(req.query) ?: return ActionResult("I can't answer that.")
+            if (!question) {
+                // A command Brick can't carry out ("order a pizza") isn't a topic to look up.
+                if (Wording.COMMAND.containsMatchIn(req.query)) return ActionResult("I can't do that yet.", readout = info.search(req.query, null, openBrowser))
+                // A bare topic ("the twelve days of christmas"): what it is.
+                Lookup.find(lq)?.let { return lookupResult(req, it, openBrowser) }
+                SearchService.answer(req.query)?.let { return ActionResult(it.text, readout = info.search(req.query, it, openBrowser)) }
+                return ActionResult("I couldn't find a quick answer for that.", readout = info.search(req.query, null, openBrowser))
+            }
+            val a = SearchService.answer(req.query)
+                // No quick answer: maybe it's a page after all ("what's baywatch").
+                ?: Lookup.find(lq)?.let { return lookupResult(req, it, openBrowser) }
+                ?: return ActionResult("I can't answer that.", readout = info.search(req.query, null, openBrowser))
             return ActionResult(a.text, readout = info.search(req.query, a, openBrowser))
         }
         val answer = SearchService.answer(req.query)
@@ -1143,6 +1322,65 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         } else {
             ActionResult("Searching for ${req.query}. Opening the results in your browser.", after = openBrowser)
         }
+    }
+
+    /** A looked-up person, movie, show, platform...: the fact you asked for, or the summary, with its card. */
+    private fun lookupResult(req: Request.Search, r: LookupResult, openBrowser: () -> Unit): ActionResult {
+        val openPage = { launch(Intent(Intent.ACTION_VIEW, Uri.parse(r.url))); Unit }
+        val said = r.answer ?: r.summary
+        val line = if (req.explicit) "Here's what I found on ${r.title}. $said" else said
+        return ActionResult(line, readout = info.lookup(r, openPage, openBrowser))
+    }
+
+    // ---------------------------------------------------------------- ratings, where to watch / buy / listen, credits
+
+    private fun country(): String = java.util.Locale.getDefault().country.takeIf { it.length == 2 } ?: "US"
+
+    private suspend fun media(req: Request.MediaAsk): ActionResult {
+        val open: (String) -> Unit = { u -> launch(Intent(Intent.ACTION_VIEW, Uri.parse(u))) }
+        when (req.kind) {
+            MediaAskKind.RATING, MediaAskKind.WATCH, MediaAskKind.BUY_VIDEO -> {
+                val title = req.title ?: return ActionResult("Which movie or show?")
+                val key = settings.current.tmdbKey
+                val v = MediaGuide.video(title, req.video, key, country())
+                    ?: return if (req.kind == MediaAskKind.RATING && req.video == null) search(Request.Search(title)) else ActionResult("I couldn't find a movie or show called $title.")
+                return when (req.kind) {
+                    MediaAskKind.RATING -> ActionResult(MediaGuide.ratingLine(v), readout = MediaCards.rating(v, open))
+                    MediaAskKind.WATCH -> ActionResult(MediaGuide.watchLine(v, req.free), readout = MediaCards.watch(v, req.free, key.isBlank(), open))
+                    else -> ActionResult(MediaGuide.buyVideoLine(v, req.format, req.rent),
+                        readout = MediaCards.buyVideo(v, MediaGuide.videoStores(v, req.format), req.rent, open))
+                }
+            }
+            else -> {
+                val playing = if (req.title == null) com.brick.assistant.media.LikeSong.current(context) else null
+                val (t, a) = when {
+                    req.title != null -> req.title to req.artist
+                    playing?.title != null -> MediaGuide.cleanPlaying(playing.title, playing.artist)
+                    playing != null -> return ActionResult("${playing.app} isn't sharing the song's name. Tell me the song and I'll look it up.")
+                    !Discord.hasAccess() -> return ActionResult("To see what's playing, Brick needs notification access. Turn it on in Settings, under Notification access, or tell me the song.")
+                    else -> return ActionResult("Nothing's playing right now. Tell me the song and I'll look it up.")
+                }
+                val song = MediaGuide.song(t, a)?.copy(playingIn = playing?.app)
+                    ?: return ActionResult("I couldn't find the song $t" + (a?.let { " by $it" } ?: "") + ".")
+                return when (req.kind) {
+                    MediaAskKind.LISTEN -> ActionResult(MediaGuide.listenLine(song, req.free, req.service),
+                        readout = MediaCards.listen(song, MediaGuide.listenSpots(song), req.free, open))
+                    MediaAskKind.BUY_SONG -> ActionResult(MediaGuide.buySongLine(song), readout = MediaCards.buySong(song, MediaGuide.songStores(song), open))
+                    else -> {
+                        val basic = req.role in setOf(CreditRole.ALBUM, CreditRole.LABEL, CreditRole.RELEASE, CreditRole.GENRE)
+                        val c = if (basic) SongCredits(LinkedHashMap(), null) else MediaGuide.credits(song)
+                        ActionResult(MediaGuide.creditsLine(song, c, req.role, req.instrument), readout = MediaCards.credits(song, c, req.role))
+                    }
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- spelling
+
+    private suspend fun spell(req: Request.Spell): ActionResult {
+        val r = Spelling.lookup(req.word)
+        return ActionResult(Spelling.spoken(r), readout = info.spelling(r))
     }
 
     // ---------------------------------------------------------------- math
@@ -1261,11 +1499,11 @@ class Actions(private val context: Context, private val settings: SettingsStore)
                 EffectState.TOGGLE -> "driver.effect.${effectKey(req.effect)}"
             }
             is Request.EffectPreset -> req.effect?.let { "driver.preset.${effectKey(it)}" } ?: "driver.preset"
-            is Request.Lyrics -> "driver.lyrics"
+            is Request.Lyrics -> if (req.download) "driver.lyrics" else "music.lyrics"
             Request.NowPlaying -> "driver.nowplaying"
             Request.LikeSong -> "like"
             is Request.AddToPlaylist -> "playlist.add"
-            is Request.Navigate -> {
+            is Request.Navigate -> if (req.directions && com.brick.assistant.data.Places.find(req.destination) != null) "maps.saved" else {
                 val app = when (defaultMapsPackage()) {
                     "com.google.android.apps.maps" -> "google"
                     "com.waze" -> "waze"
@@ -1281,8 +1519,28 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             }
             is Request.ReadNotifications -> if (req.email) "read.email" else "read.notifications"
             is Request.ReadCalendar -> "read.calendar"
-            is Request.Search -> if (req.explicit) "search.web" else "search.question"
+            is Request.Search -> Lookup.understand(req.query).kind?.let { "search.${it.name.lowercase()}" }
+                ?: if (req.explicit) "search.web" else "search.question"
+            is Request.Spell -> "search.spell"
+            is Request.MediaAsk -> when (req.kind) {
+                MediaAskKind.RATING -> "media.rating"
+                MediaAskKind.WATCH -> "media.watch"
+                MediaAskKind.BUY_VIDEO -> "media.buy"
+                MediaAskKind.LISTEN -> "music.listen"
+                MediaAskKind.BUY_SONG -> "music.buy"
+                MediaAskKind.CREDITS -> "music.credits"
+            }
+            is Request.Convert -> "math.convert"
+            is Request.Math -> "math.calc"
+            is Request.Weather -> when {
+                req.span == WeatherSpan.WEEK -> "weather.week"
+                req.span == WeatherSpan.WEEKEND -> "weather.weekend"
+                req.tomorrow -> "weather.tomorrow"
+                else -> "weather.today"
+            }
+            is Request.Stopwatch -> "stopwatch"
             is Request.TellTime -> "device.time"
+            is Request.Countdown -> "device.countdown"
             is Request.Device -> when (req.op) {
                 DeviceOp.FLASH_ON -> "device.flashlight.on"
                 DeviceOp.FLASH_OFF -> "device.flashlight.off"
@@ -1293,6 +1551,8 @@ class Actions(private val context: Context, private val settings: SettingsStore)
                 DeviceOp.BRIGHT_UP, DeviceOp.BRIGHT_DOWN, DeviceOp.BRIGHT_SET -> "device.brightness"
                 DeviceOp.WIFI, DeviceOp.BLUETOOTH -> "device.connections"
             }
+            is Request.PhoneSettingReq -> if (req.ask == SettingAsk.WHERE) "device.settings.where" else "device.settings"
+            is Request.SmartHome -> "device.smarthome"
             is Request.PlaceHours -> "maps.hours"
             is Request.PhotoSpots -> "maps.photos"
             is Request.Sky -> when {
@@ -1383,6 +1643,76 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             lines += reply.message.ifBlank { "Done." }
         }
         return ActionResult(lines.joinToString(" "))
+    }
+
+    /**
+     * Lyrics on Brick's card: Driver's own copy, then a lyric file on the phone, then lrclib.net. For the song
+     * playing now they follow along (line or word synced); a named song is shown as a list. Never read aloud.
+     */
+    private suspend fun showLyrics(req: Request.Lyrics): ActionResult = withContext(Dispatchers.IO) {
+        val playing = if (req.song == null) com.brick.assistant.media.LikeSong.current(context) else null
+        if (req.song == null && playing == null) {
+            return@withContext if (!Discord.hasAccess()) ActionResult("I need notification access to see what's playing. You can turn it on in Settings.")
+            else ActionResult("Nothing is playing. Which song do you want the lyrics for?")
+        }
+        val md = playing?.controller?.metadata
+        val title = req.song ?: playing?.title ?: return@withContext ActionResult("I can't tell what song this is.")
+        val artist = req.artist ?: playing?.artist
+        val album = md?.getString(android.media.MediaMetadata.METADATA_KEY_ALBUM)
+        val durSec = md?.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION)?.takeIf { it > 0 }?.let { (it / 1000).toInt() }
+        val doc = (if (playing == null || playing.pkg == DriverBridge.PACKAGE) Lyrics.fromDriver(context, title, artist) else null)
+            ?: Lyrics.fromPhone(title, artist)
+            ?: Lyrics.fromLrclib(title, artist, album, durSec)
+        val who = artist?.let { " by $it" } ?: ""
+        if (doc == null) return@withContext ActionResult("I couldn't find lyrics for $title$who.")
+        if (doc.instrumental) return@withContext ActionResult("$title$who is an instrumental, so there are no lyrics.")
+        val c = playing?.controller
+        // The song playing now is still the one these lyrics are for (same title, and artist when both say).
+        fun key(s: String?) = s?.let { Lyrics.cleanTitle(it) }?.lowercase()?.replace(Regex("[^\\p{L}\\p{N}]+"), "")?.ifEmpty { null }
+        val sameSong: () -> Boolean = {
+            val now = com.brick.assistant.media.LikeSong.current(context)
+            val t = key(now?.title)
+            t != null && (t == key(title) || t == key(doc.title)) &&
+                (key(Lyrics.mainArtist(now?.artist)).let { a -> a == null || key(Lyrics.mainArtist(artist)) == null || a == key(Lyrics.mainArtist(artist)) })
+        }
+        val panel = LyricsPanel(
+            doc,
+            position = {
+                c?.playbackState?.let { st ->
+                    if (st.state == android.media.session.PlaybackState.STATE_PLAYING) {
+                        st.position + ((android.os.SystemClock.elapsedRealtime() - st.lastPositionUpdateTime) * st.playbackSpeed).toLong()
+                    } else st.position
+                }
+            },
+            playing = { c?.playbackState?.state == android.media.session.PlaybackState.STATE_PLAYING },
+            seek = c?.let { ctl -> { ms: Long -> ctl.transportControls.seekTo(ms) } },
+            toggle = c?.let { ctl -> {
+                if (ctl.playbackState?.state == android.media.session.PlaybackState.STATE_PLAYING) ctl.transportControls.pause() else ctl.transportControls.play()
+            } },
+            sameSong = sameSong,
+            duration = { c?.metadata?.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION)?.takeIf { it > 0 } },
+            app = playing?.app,
+        )
+        val kind = when (doc.sync) { LyricsSync.WORD -> "word synced"; LyricsSync.LINE -> "line synced"; LyricsSync.PLAIN -> "plain text" }
+        val rows = listOf(
+            doc.title + (doc.artist?.let { " - $it" } ?: ""),
+            Box.kv("LYRICS", "$kind, from ${doc.source.label}"),
+        )
+        val line = "Here are the lyrics for ${doc.title}" + (doc.artist?.let { " by $it" } ?: "") +
+            (if (doc.sync != LyricsSync.PLAIN && c != null) ", following along." else ".")
+        val shown = if (c != null) panel else LyricsPanel(doc, { null }, { false }, sameSong = sameSong)
+        LyricsHolder.current = shown
+        val full = Control.Button("Full screen") {
+            if (shown.sameSong()) {
+                launch(Intent(context, com.brick.assistant.ui.LyricsActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } else {
+                // Another song is playing now: these lyrics would be the wrong ones full screen.
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    android.widget.Toast.makeText(context, "A different song is playing now. Ask Brick for its lyrics.", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+        ActionResult(line, readout = Readout(Box.build("LYRICS", rows), controls = listOf(full), lyrics = shown))
     }
 
     private suspend fun driver(command: android.os.Bundle, openingLine: String?): ActionResult {

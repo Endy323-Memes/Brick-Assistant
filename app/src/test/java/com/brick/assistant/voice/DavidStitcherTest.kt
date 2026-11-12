@@ -5,16 +5,21 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
-import java.io.RandomAccessFile
 
 class DavidStitcherTest {
     private val dir = File("src/main/assets/david_words")
 
-    private val source = object : AdpcmWordSource() {
-        override fun readIndex() = File(dir, "index.tsv").readText()
-        override fun readBytes(offset: Long, length: Int): ByteArray? = RandomAccessFile(File(dir, "words.adpcm"), "r").use {
-            it.seek(offset)
-            ByteArray(length).also { b -> it.readFully(b) }
+    /** The real word list and lengths from the Opus bank, with a stand-in tone for the audio (JVM tests can't decode Opus). */
+    private val source = object : WordSource {
+        private val index: Map<String, Int> by lazy {
+            File(dir, "index16.tsv").readLines().mapNotNull { l ->
+                l.split('\t').takeIf { it.size == 4 }?.let { it[0] to it[3].toInt() }
+            }.toMap()
+        }
+        override val sampleRate = 16000
+        override fun contains(word: String) = word in index
+        override fun get(word: String): FloatArray? = index[word]?.let { n ->
+            FloatArray(n) { i -> (0.3 * kotlin.math.sin(2 * Math.PI * 140.0 * i / sampleRate)).toFloat() }
         }
     }
 
@@ -67,16 +72,39 @@ class DavidStitcherTest {
         val casual = "Holy shit, that was fucking awesome. You sped right past it, bro."
         assertEquals(1f, DavidStitcher.coverage(casual, source))
         val r3 = DavidStitcher.stitch(casual, source) { null }!!
-        assertTrue(r3.audio.samples.maxOf { kotlin.math.abs(it) } > 0.05f) // decoded audio isn't silent
+        assertTrue(r3.audio.samples.maxOf { kotlin.math.abs(it) } > 0.05f) // stitched audio isn't silent
 
-        val out = File(System.getProperty("stitchOut") ?: return).apply { mkdirs() }
-        Wav.write(File(out, "david-stitched_of-course.wav"), full)
-        Wav.write(File(out, "david-stitched_interrupted.wav"), cut)
-        Wav.write(File(out, "david-stitched_casual.wav"), r3.audio)
-        val q = DavidStitcher.stitch("Do you want me to play some music?", source) { null }!!
-        Wav.write(File(out, "david-stitched_question.wav"), q.audio)
-        // What the phone plays now: custom responses at the default 1.2x speed.
-        Wav.write(File(out, "david-stitched_of-course_1.2x.wav"), PcmAudio(Wsola.speed(full.samples, full.sampleRate, 1.2f), full.sampleRate))
+    }
+
+    /** A flat, voice-like buzz at [f0] Hz. */
+    private fun buzz(f0: Double, sr: Int, secs: Double) = FloatArray((sr * secs).toInt()) { i ->
+        var v = 0.0
+        for (h in 1..6) v += kotlin.math.sin(2 * Math.PI * f0 * h * i / sr) / h
+        (0.25 * v).toFloat()
+    }
+
+    private fun endPitch(x: FloatArray, sr: Int): Float {
+        val tail = x.copyOfRange(x.size - sr / 8, x.size)
+        return PitchTracker.track(tail, sr).median()!!
+    }
+
+    @Test
+    fun questionsEndOnARise() {
+        val sr = 16000
+        val flat = PcmAudio(buzz(110.0, sr, 1.2), sr)
+        val asked = RobotFx.questionRise(flat)
+        assertEquals(flat.samples.size, asked.samples.size)
+        assertTrue("start stays put", kotlin.math.abs(PitchTracker.track(asked.samples.copyOfRange(0, sr / 3), sr).median()!! - 110f) < 6f)
+        val end = endPitch(asked.samples, sr)
+        assertTrue("ending rises: $end Hz", end > 125f)
+        // An ending that already rises enough is left alone.
+        val again = RobotFx.questionRise(asked)
+        assertTrue("no double rise: ${endPitch(again.samples, sr)} vs $end", endPitch(again.samples, sr) < end * 1.06f)
+        // Stitched questions rise on the last word; statements don't.
+        val q = DavidStitcher.stitch("Do you want me to read the details?", source) { null }!!.audio
+        val st = DavidStitcher.stitch("I will read the details.", source) { null }!!.audio
+        assertTrue("question ${endPitch(q.samples, q.sampleRate)} vs statement ${endPitch(st.samples, st.sampleRate)}",
+            endPitch(q.samples, q.sampleRate) > endPitch(st.samples, st.sampleRate) * 1.15f)
     }
 
     private fun abs(v: Int) = if (v < 0) -v else v

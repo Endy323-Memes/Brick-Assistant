@@ -213,6 +213,35 @@ class Infographics(private val context: Context) {
         return Readout(Box.build("CALENDAR", rows))
     }
 
+    fun countdown(t: Countdown.Target, since: Boolean): Readout {
+        val now = LocalDateTime.now()
+        val today = now.toLocalDate()
+        val days = java.time.temporal.ChronoUnit.DAYS.between(today, t.date)
+        val start = if (t.time != null) now else today.atStartOfDay()
+        val at = Countdown.moment(t)
+        val rows = ArrayList<String>()
+        rows += t.name.replaceFirstChar { it.uppercase() }
+        rows += ""
+        rows += Box.kv("DATE", t.date.format(DateTimeFormatter.ofPattern("EEE, MMM d, yyyy", us)) + (t.time?.let { " " + it.format(clock) } ?: ""))
+        rows += Box.kv(if (since) "SINCE" else "LEFT", when {
+            days == 0L && t.time == null -> "today"
+            t.time != null && kotlin.math.abs(days) < 2 -> Countdown.amount(start, at, CountUnit.HOURS)
+            else -> Countdown.amount(start, at, CountUnit.DAYS)
+        })
+        if (kotlin.math.abs(days) >= 14) rows += Box.kv("WEEKS", Countdown.amount(start, at, CountUnit.WEEKS))
+        if (kotlin.math.abs(days) >= 60) rows += Box.kv("MONTHS", Countdown.amount(start, at, CountUnit.MONTHS))
+        if (!since && t.holiday && days in 1..365) {
+            // How far along the wait is since this holiday last year.
+            val span = java.time.temporal.ChronoUnit.DAYS.between(t.date.minusYears(1), t.date).coerceAtLeast(1)
+            rows += Box.kv("WAIT", Box.percent((100 - days * 100 / span).toInt()))
+        }
+        val cal = Intent(Intent.ACTION_VIEW).setData(
+            android.provider.CalendarContract.CONTENT_URI.buildUpon().appendPath("time")
+                .appendPath(at.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli().toString()).build(),
+        )
+        return Readout(Box.build("COUNTDOWN", rows), controls = listOf(Control.Button("Calendar", open(cal))))
+    }
+
     fun timer(seconds: Long, label: String = "timer"): Readout {
         val ends = LocalDateTime.now().plusSeconds(seconds)
         val rows = listOf(
@@ -368,6 +397,110 @@ class Infographics(private val context: Context) {
         return Readout(Box.build("SEARCH", rows), image = answer?.image, controls = listOf(Control.Button("Open results", openResults)))
     }
 
+    /** A looked-up person, movie, show, platform...: its kind as the title, its facts, the summary, and its picture. */
+    fun lookup(r: LookupResult, openPage: () -> Unit, openResults: () -> Unit): Readout {
+        val rows = ArrayList<String>()
+        rows += Box.wrap(Box.ascii(r.title), max = 2)
+        r.description?.let { rows += Box.wrap(it, max = 2) }
+        if (r.facts.isNotEmpty()) {
+            rows += ""
+            for ((label, value) in r.facts) rows += Box.wrap(value, first = Box.kv(label, ""), indent = 7, max = 3)
+        }
+        r.answer?.let { rows += ""; rows += Box.wrap(it, "> ", indent = 2, max = 3) }
+        rows += ""
+        rows += Box.wrap(r.summary, max = 7)
+        rows += ""
+        rows += Box.kv("SOURCE", "Wikipedia, Wikidata")
+        val title = (r.kind?.label ?: "LOOKUP").uppercase(us)
+        return Readout(Box.build(title, rows), image = r.image,
+            controls = listOf(Control.Button("Wikipedia", openPage), Control.Button("Web results", openResults)))
+    }
+
+    /** A unit conversion: the answer, the factor, and the same amount in a few nearby units. */
+    fun conversion(c: Conversion): Readout {
+        val rows = ArrayList<String>()
+        rows += Box.wrap("${Units.format(c.amount)} ${c.from.spoken(c.amount)}", max = 2)
+        rows += Box.wrap("= ${Units.format(c.result)} ${c.to.spoken(c.result)}", max = 2)
+        rows += ""
+        rows += Box.kv("KIND", c.from.dim.label)
+        if (c.from.dim == Dimension.TEMPERATURE) {
+            rows += Box.kv("RULE", when {
+                c.from == MeasureUnit.CELSIUS && c.to == MeasureUnit.FAHRENHEIT -> "F = C x 9/5 + 32"
+                c.from == MeasureUnit.FAHRENHEIT && c.to == MeasureUnit.CELSIUS -> "C = (F - 32) x 5/9"
+                c.to == MeasureUnit.KELVIN -> "K = C + 273.15"
+                else -> "C = K - 273.15"
+            })
+        } else {
+            rows += Box.kv("FACTOR", "1 ${c.from.abbr} = ${Units.format(c.from.factor / c.to.factor)} ${c.to.abbr}")
+        }
+        val more = Units.related(c)
+        if (more.isNotEmpty()) {
+            rows += ""
+            rows += "ALSO"
+            for ((u, v) in more) rows += Box.kv("", "${Units.format(v)} ${u.spoken(v)}")
+        }
+        if (c.from == MeasureUnit.MONTH || c.to == MeasureUnit.MONTH) rows += Box.wrap("A month here is the average, 30.44 days.", max = 2)
+        if (c.from == MeasureUnit.YEAR || c.to == MeasureUnit.YEAR) rows += Box.wrap("A year here is 365 days (a leap year is 366).", max = 2)
+        return Readout(Box.build("CONVERT", rows))
+    }
+
+
+    /**
+     * The card for an answer that has none of its own (directions, apps, YouTube, notes, texts, small talk, errors):
+     * what Brick understood from [req] and what it said ([line]), with a button to do it again when there is one ([again]).
+     */
+    fun summary(req: Request, line: String, again: (() -> Unit)?): Readout {
+        val rows = ArrayList<String>()
+        val title = when (req) {
+            is Request.Navigate -> { rows += Box.kv("TO", req.destination); rows += Box.kv("MODE", if (req.directions) "directions" else "map"); "MAPS" }
+            is Request.FindPlace -> { rows += Box.kv("FIND", req.what); req.area?.let { rows += Box.kv("NEAR", it) }; "PLACES" }
+            is Request.PlaceHours -> { rows += Box.kv("PLACE", req.place); rows += Box.kv("WHEN", if (req.tomorrow) "tomorrow" else "today"); "HOURS" }
+            is Request.YouTube -> { rows += Box.kv("SEARCH", req.query); rows += Box.kv("MODE", if (req.play) "play" else "results"); if (req.music) "YT MUSIC" else "YOUTUBE" }
+            is Request.OpenApp -> { rows += Box.kv("APP", req.name); "APP" }
+            is Request.Text -> { rows += Box.kv("TO", req.recipient); req.body?.let { rows += Box.wrap(it, Box.kv("SAYS", ""), max = 3) }; "TEXT" }
+            is Request.Call -> { rows += Box.kv("CALL", req.who); "CALL" }
+            is Request.Discord -> { req.who?.let { rows += Box.kv("WHO", it) }; rows += Box.kv("DO", if (req.reply) "reply" else "read"); "DISCORD" }
+            is Request.Note -> { req.text?.let { rows += Box.wrap(it, Box.kv("NOTE", ""), max = 4) }; "NOTE" }
+            is Request.Reminder -> { rows += Box.wrap(req.task, Box.kv("TASK", ""), max = 2); "REMINDER" }
+            is Request.CalendarEvent -> { rows += Box.wrap(req.title, Box.kv("EVENT", ""), max = 2); "CALENDAR" }
+            is Request.ReadNotifications -> { req.from?.let { rows += Box.kv("FROM", it) }; if (req.email) "EMAIL" else "NOTIFY" }
+            is Request.ReadCalendar -> "CALENDAR"
+            is Request.Search -> { rows += Box.wrap(req.query, Box.kv("QUERY", ""), max = 2); "SEARCH" }
+            is Request.Spell -> { rows += Box.kv("WORD", req.word); "SPELL" }
+            is Request.Music, is Request.Lyrics, is Request.LikeSong, is Request.NowPlaying, is Request.AddToPlaylist,
+            is Request.Effect, is Request.EffectPreset -> "MUSIC"
+            is Request.Alarm -> "ALARM"
+            is Request.Timer, is Request.TimerControl, is Request.Stopwatch -> "TIMER"
+            is Request.Setting -> { rows += Box.kv("SET", req.setting.name.lowercase().replace('_', ' ')); rows += Box.kv("TO", if (req.on) "on" else "off"); "BRICK" }
+            is Request.Device, is Request.PhoneSettingReq, is Request.SmartHome -> "DEVICE"
+            is Request.Weather -> "WEATHER"
+            is Request.Sky, is Request.PhotoSpots -> "SKY"
+            is Request.Math, is Request.Convert -> "MATH"
+            is Request.Chat -> "BRICK"
+            else -> req.category?.name?.replace('_', ' ') ?: "BRICK"
+        }
+        if (rows.isNotEmpty()) rows += ""
+        rows += Box.wrap(line, max = 8)
+        val controls = again?.let { listOf(Control.Button(if (req is Request.Navigate || req is Request.OpenApp || req is Request.YouTube) "Open again" else "Again") { it() }) } ?: emptyList()
+        return Readout(Box.build(title, rows), controls = controls)
+    }
+    /** A spelled word: big spaced letters, how many, a correction if it was misspelled, and sound-alikes. */
+    fun spelling(r: SpellResult): Readout {
+        val rows = ArrayList<String>()
+        if (r.corrected) rows += Box.wrap("you said: ${r.asked}", max = 2)
+        rows += Box.ascii(r.word).lowercase(us).take(Box.W)
+        rows += ""
+        rows += Box.wrap(r.letters.joinToString(" ") { if (it == ' ') "_" else it.uppercaseChar().toString() }, max = 4)
+        rows += ""
+        rows += Box.kv("LETTERS", r.letterCount.toString())
+        val vowels = r.word.count { it.lowercaseChar() in "aeiou" }
+        rows += Box.kv("VOWELS", vowels.toString())
+        val doubles = Regex("([a-z])\\1").findAll(r.word.lowercase(us)).map { it.value }.toList()
+        if (doubles.isNotEmpty()) rows += Box.kv("DOUBLE", doubles.joinToString(", "))
+        if (r.soundsLike.isNotEmpty()) rows += Box.wrap(r.soundsLike.joinToString(", "), first = Box.kv("NOT", ""), indent = 7, max = 2)
+        return Readout(Box.build("SPELL", rows))
+    }
+
     fun math(r: MathEvaluator.Result): Readout {
         val rows = ArrayList<String>()
         rows += Box.wrap(r.expression.ifBlank { r.spoken }, max = 3)
@@ -511,6 +644,134 @@ class Infographics(private val context: Context) {
         rows += "Android only lets you switch"
         rows += "this from its own panel."
         return Readout(Box.build(if (wifi) "WI-FI" else "BLUETOOTH", rows), controls = listOf(Control.Button(if (wifi) "Wi-Fi panel" else "Bluetooth settings", open(Intent(panel)))))
+    }
+
+    // ---------------------------------------------------------------- phone settings
+
+    /** How Brick can change [s], for the CAN row. */
+    private fun reachText(s: PhoneSetting): String = when (s.reach) {
+        SettingReach.DIRECT -> when {
+            s == PhoneSetting.DND -> if (context.getSystemService(android.app.NotificationManager::class.java)?.isNotificationPolicyAccessGranted == true) "switch it here" else "needs DND access"
+            s == PhoneSetting.SOUND_MODE || s == PhoneSetting.VOLUME -> "change it here"
+            PhoneSettings.canWrite(context) -> "switch it here"
+            else -> "allow Brick first"
+        }
+        SettingReach.ASSISTANT -> if (com.brick.assistant.assist.BrickVoiceInteractionService.active != null) "switch it here" else "needs Brick as assistant"
+        SettingReach.OPEN -> if (s == PhoneSetting.BLUETOOTH) "turn on here, off in panel" else "opens its panel"
+    }
+
+    /** The switch (or buttons) for [s] on a readout, when Brick can change it from there. */
+    private fun controlsFor(s: PhoneSetting): List<Control> {
+        val c = ArrayList<Control>()
+        when (s.reach) {
+            SettingReach.DIRECT -> when (s) {
+                PhoneSetting.SOUND_MODE -> {
+                    c += Control.Button("Sound") { PhoneSettings.setSoundMode(context, AudioManager.RINGER_MODE_NORMAL) }
+                    c += Control.Button("Vibrate") { PhoneSettings.setSoundMode(context, AudioManager.RINGER_MODE_VIBRATE) }
+                    c += Control.Button("Mute") { PhoneSettings.setSoundMode(context, AudioManager.RINGER_MODE_SILENT) }
+                }
+                PhoneSetting.VOLUME -> {
+                    c += mediaVolume()
+                    listOf("Ring" to AudioManager.STREAM_RING, "Notifications" to AudioManager.STREAM_NOTIFICATION, "Alarm" to AudioManager.STREAM_ALARM).forEach { (label, stream) ->
+                        streamSlider(label, stream)?.let { c += it }
+                    }
+                }
+                PhoneSetting.DND -> {
+                    val nm = context.getSystemService(android.app.NotificationManager::class.java)
+                    if (nm?.isNotificationPolicyAccessGranted == true) c += Control.Toggle(s.title, { PhoneSettings.isOn(context, s) == true }) { PhoneSettings.setDirect(context, s, it) }
+                    else c += assistantToggle(s)
+                }
+                else -> if (PhoneSettings.canWrite(context)) {
+                    c += Control.Toggle(s.title, { PhoneSettings.isOn(context, s) == true }) { PhoneSettings.setDirect(context, s, it) }
+                } else {
+                    c += Control.Button("Allow Brick to change it", open(PhoneSettings.writePermission(context)))
+                }
+            }
+            SettingReach.ASSISTANT -> c += assistantToggle(s)
+            SettingReach.OPEN -> if (s == PhoneSetting.BLUETOOTH && PhoneSettings.isOn(context, s) == false) {
+                c += Control.Button("Turn on") { PhoneSettings.requestBluetoothOn(context) }
+            }
+        }
+        if (s == PhoneSetting.MEDIA_OUTPUT) c += Control.Button("Pick output") { PhoneSettings.open(context, s) }
+        else c += Control.Button("Open ${s.title}") { PhoneSettings.open(context, s) }
+        return c
+    }
+
+    /** Airplane mode, power saving or Do Not Disturb, switched through the assistant session (or its page otherwise). */
+    private fun assistantToggle(s: PhoneSetting) = Control.Toggle(s.title, { PhoneSettings.isOn(context, s) == true }) { on ->
+        val i = PhoneSettings.assistantIntent(s, on)
+        if (i == null || !com.brick.assistant.assist.BrickVoiceInteractionService.runVoiceAction(i)) PhoneSettings.open(context, s)
+    }
+
+    private fun streamSlider(label: String, stream: Int): Control.Slider? {
+        val am = context.getSystemService(AudioManager::class.java) ?: return null
+        val max = am.getStreamMaxVolume(stream).coerceAtLeast(1)
+        return Control.Slider(label, get = { am.getStreamVolume(stream) * 100f / max }, range = 0f..100f, format = { "${it.roundToInt()}%" }) { v ->
+            try { am.setStreamVolume(stream, (v * max / 100).roundToInt(), 0) } catch (_: Exception) { } // ring at 0 needs DND access
+        }
+    }
+
+    /** One phone setting: its state, whether Brick can switch it, and where it is in Settings and the quick panel. */
+    fun phoneSetting(s: PhoneSetting): Readout {
+        val on = PhoneSettings.isOn(context, s)
+        val rows = ArrayList<String>()
+        rows += Box.kv("STATE", PhoneSettings.stateText(context, s) + if (on != null) "  " + Box.bar(if (on) 6 else 0, 6) else "")
+        rows += Box.kv("CAN", reachText(s))
+        rows += ""
+        rows += Box.wrap(s.path, first = Box.kv("WHERE", ""), indent = 7, max = 4)
+        s.quickLine?.let { rows += Box.wrap(it.removePrefix("Quick panel: "), first = Box.kv("QUICK", ""), indent = 7, max = 3) }
+        return Readout(Box.build(Box.ascii(s.title).uppercase(us), rows), controls = controlsFor(s), refresh = { phoneSetting(s) })
+    }
+
+    /** Every phone setting Brick knows, with its state, the switches Brick can flip, and a way to the rest. */
+    fun phoneSettings(): Readout {
+        val rows = ArrayList<String>()
+        for (s in PhoneSetting.entries) rows += Box.kv(s.tag, PhoneSettings.stateText(context, s))
+        rows += ""
+        rows += Box.wrap("Ask \"where is NFC\" (or any of these) for its menu.", max = 3)
+        val controls = ArrayList<Control>()
+        if (PhoneSettings.canWrite(context)) {
+            listOf(PhoneSetting.AUTO_ROTATE, PhoneSetting.ADAPTIVE_BRIGHTNESS).forEach { s ->
+                controls += Control.Toggle(s.title, { PhoneSettings.isOn(context, s) == true }) { PhoneSettings.setDirect(context, s, it) }
+            }
+        }
+        listOf(PhoneSetting.AIRPLANE, PhoneSetting.POWER_SAVING, PhoneSetting.DND).forEach { controls += controlsFor(it).first() }
+        controls += mediaVolume()
+        listOf(PhoneSetting.WIFI, PhoneSetting.BLUETOOTH, PhoneSetting.MOBILE_DATA, PhoneSetting.HOTSPOT, PhoneSetting.NFC,
+            PhoneSetting.QUICK_SHARE, PhoneSetting.MEDIA_OUTPUT, PhoneSetting.AOD).forEach { s ->
+            controls += Control.Button(s.title) { PhoneSettings.open(context, s) }
+        }
+        return Readout(Box.build("PHONE SETTINGS", rows), controls = controls, refresh = ::phoneSettings)
+    }
+
+    // ---------------------------------------------------------------- smart home
+
+    /** Govee lights (switch and brightness each) and the home apps on the phone. */
+    fun smartHome(key: String, devices: List<GoveeDevice>, shown: List<GoveeDevice> = devices): Readout {
+        val rows = ArrayList<String>()
+        val controls = ArrayList<Control>()
+        if (key.isBlank()) {
+            rows += Box.wrap("Brick switches Govee lights once you add a Govee API key.", max = 3)
+            rows += Box.wrap("Brick > Settings > Smart home", first = Box.kv("KEY", ""), indent = 7, max = 2)
+            rows += Box.wrap("Govee Home > Profile > Settings > Apply for API Key", first = Box.kv("GET IT", ""), indent = 7, max = 3)
+        } else if (shown.isEmpty()) {
+            rows += "no Govee lights found"
+        }
+        for (d in shown) {
+            rows += Box.ascii(d.name).take(Box.W)
+            val b = d.brightness
+            rows += Box.kv("", (when (d.on) { true -> "on"; false -> "off"; null -> "?" }) + if (b != null && d.on == true) "  " + Box.percent(b) else "")
+            controls += Control.Toggle(d.name, { d.on == true }) { on -> Thread { Govee.power(key, d, on) }.start() }
+            if (d.canDim) controls += Control.Slider("${d.name} brightness", get = { (d.brightness ?: 100).toFloat() }, range = 1f..100f,
+                format = { "${it.roundToInt()}%" }) { v -> d.brightness = v.roundToInt(); Thread { Govee.brightness(key, d, v.roundToInt()) }.start() }
+        }
+        val apps = HomeApp.entries.filter { it.installed(context) }
+        if (apps.isNotEmpty()) {
+            rows += ""
+            rows += Box.wrap(apps.joinToString(", ") { it.label }, first = Box.kv("APPS", ""), indent = 7, max = 3)
+        }
+        apps.forEach { a -> controls += Control.Button(a.label) { a.open(context) } }
+        return Readout(Box.build("SMART HOME", rows), controls = controls, refresh = { smartHome(key, Govee.devices.ifEmpty { devices }, shown) })
     }
 
     // ---------------------------------------------------------------- Brick settings

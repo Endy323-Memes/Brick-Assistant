@@ -143,6 +143,45 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
         setOnClickListener { if (typing) stopTyping() else startTyping() }
     }
 
+    /** Muted voices (the mute button): Brick's and/or the unit's. Lines still show as text. */
+    private var muteBrick = false
+    private var muteUnit = false
+    /** The mute button changed: (brick muted, unit muted). */
+    var onMute: ((Boolean, Boolean) -> Unit)? = null
+
+    /** Tap: mute both voices (or unmute). Long-press: pick Brick only, the unit only, or both. */
+    private val muteButton = text(12.5f, textMid, bold = true).apply {
+        setPadding(0, (4 * d).toInt(), (12 * d).toInt(), (4 * d).toInt())
+        setOnClickListener { val any = muteBrick || muteUnit; setMuted(!any, !any) }
+        setOnLongClickListener { v ->
+            android.widget.PopupMenu(context, v).apply {
+                menu.add(0, 1, 0, "Mute Brick only")
+                menu.add(0, 2, 1, "Mute unit only")
+                menu.add(0, 3, 2, "Mute both")
+                if (muteBrick || muteUnit) menu.add(0, 4, 3, "Unmute")
+                setOnMenuItemClickListener { item ->
+                    when (item.itemId) { 1 -> setMuted(true, false); 2 -> setMuted(false, true); 3 -> setMuted(true, true); else -> setMuted(false, false) }
+                    true
+                }
+            }.show()
+            true
+        }
+    }
+
+    fun setMuted(brick: Boolean, unit: Boolean) {
+        muteBrick = brick
+        muteUnit = unit
+        muteButton.text = when {
+            brick && unit -> "[ 🔇 muted ]"
+            brick -> "[ 🔇 brick ]"
+            unit -> "[ 🔇 unit ]"
+            else -> "[ 🔊 mute ]"
+        }
+        muteButton.setTextColor(if (brick || unit) red else textMid)
+        onMute?.invoke(brick, unit)
+        render(force = true)
+    }
+
     private fun imm() = context.getSystemService(android.view.inputmethod.InputMethodManager::class.java)
 
     fun startTyping() {
@@ -213,7 +252,9 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(typeButton)
+            addView(muteButton)
         }
+        muteButton.text = "[ 🔊 mute ]"
         content.addView(bottom, LinearLayout.LayoutParams(-1, (30 * d).toInt()).apply { topMargin = (2 * d).toInt() })
         addView(content, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         minimumHeight = (128 * d).toInt()
@@ -290,23 +331,30 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
 
     private val spinner = charArrayOf('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
 
-    private var shownKey: Any? = null
+    // What the text lines were last built from (compared field by field, so a frame with no change allocates nothing).
+    private var shownMode: PulseView.Mode? = null
+    private var shownMain: String? = null
+    private var shownSub: String? = null
+    private var shownCursor = false
+    private var shownFrame = -1L
+    private var shownTyping = false
 
     /** Rebuilds the text lines, but only when something visible changed (text, cursor blink, spinner frame). */
     private fun render(force: Boolean = false) {
-        val cursorOn = ((SystemClock.uptimeMillis() / 530) % 2L) == 0L
-        val frame = if (mode == PulseView.Mode.THINKING) (SystemClock.uptimeMillis() / 80) % spinner.size else 0L
-        val key = listOf(mode, mainText, subText, if (mode == PulseView.Mode.LISTENING) cursorOn else false, frame, typing)
-        if (key == shownKey && !force) return
-        shownKey = key
+        val now = SystemClock.uptimeMillis()
+        val cursorOn = mode == PulseView.Mode.LISTENING && ((now / 530) % 2L) == 0L
+        val frame = if (mode == PulseView.Mode.THINKING) (now / 80) % spinner.size else 0L
+        if (!force && mode == shownMode && mainText == shownMain && subText == shownSub && cursorOn == shownCursor &&
+            frame == shownFrame && typing == shownTyping) return
+        shownMode = mode; shownMain = mainText; shownSub = subText; shownCursor = cursorOn; shownFrame = frame; shownTyping = typing
         status.setTextColor(if (mode == PulseView.Mode.MESSAGE) red else accent())
         // Typing: the type box is the prompt, so the listening line is hidden.
         main.visibility = if (typing && mode == PulseView.Mode.LISTENING) View.GONE else View.VISIBLE
         status.text = when (mode) {
             PulseView.Mode.LISTENING -> if (typing) "[ TYPING ]" else "[ LISTENING ]"
             PulseView.Mode.THINKING -> "[ ${spinner[((SystemClock.uptimeMillis() / 80) % spinner.size).toInt()]} WORKING ]"
-            PulseView.Mode.DAVID -> if (quiet) "[ BRICK · MUTED ]" else "[ BRICK ]"
-            PulseView.Mode.ROBOT -> if (quiet) "[ UNIT · MUTED ]" else "[ UNIT ]"
+            PulseView.Mode.DAVID -> if (quiet || muteBrick) "[ BRICK · MUTED ]" else "[ BRICK ]"
+            PulseView.Mode.ROBOT -> if (quiet || muteUnit) "[ UNIT · MUTED ]" else "[ UNIT ]"
             PulseView.Mode.MESSAGE -> "[ ! ]"
         }
         val sub = subText?.takeIf { it.isNotBlank() }
@@ -336,8 +384,20 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
         }
     }
 
+    /**
+     * Nothing is moving: an answer is up, nobody is talking, the meter has settled and the answer isn't scrolling.
+     * The card then redraws about [IDLE_FPS] times a second instead of every frame (saves battery).
+     */
+    private fun idle(): Boolean {
+        if (mode == PulseView.Mode.LISTENING || mode == PulseView.Mode.THINKING || followSince != 0L) return false
+        if (env > 0.01f || outputLevel() > 0.01f) return false
+        val rest = if (mode == PulseView.Mode.MESSAGE) 0.06f else 0.06f + 0.94f * env
+        return bars.all { kotlin.math.abs(it - rest) < 0.02f }
+    }
+
     private fun tick() {
         val now = SystemClock.uptimeMillis()
+        if (now - lastFrame < 1000L / IDLE_FPS && idle()) return
         val dt = ((now - lastFrame) / 1000f).coerceIn(0f, 0.05f)
         lastFrame = now
         time += dt
@@ -368,7 +428,11 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
      */
     private fun follow(now: Long) {
         val max = (main.height - mainScroll.height).coerceAtLeast(0)
-        if (max == 0) return
+        // Fits without scrolling: nothing to follow once it's been read out.
+        if (max == 0) {
+            if (followSince != 0L && now - followSince > (mainText.length / CHARS_PER_SECOND * 1000).toLong()) followSince = 0L
+            return
+        }
         if (mode == PulseView.Mode.LISTENING || mode == PulseView.Mode.THINKING) {
             if (mainScroll.scrollY != max) mainScroll.scrollTo(0, max)
             return
@@ -448,5 +512,7 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
         const val MAIN_LINES = 5
         /** About how fast Brick and the unit speak (and how fast you read): paces the auto-scroll. */
         const val CHARS_PER_SECOND = 14f
+        /** Redraws a second while the card is idle (see [idle]). */
+        const val IDLE_FPS = 10
     }
 }

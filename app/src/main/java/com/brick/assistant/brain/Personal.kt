@@ -111,8 +111,29 @@ object CalendarReader {
             CalendarRange.WEEK -> now to today.plusDays(7).atStartOfDay()
             CalendarRange.NEXT -> now to now.plusDays(60)
         }
-        val start = from.atZone(zone).toInstant().toEpochMilli()
-        val end = to.atZone(zone).toInstant().toEpochMilli()
+        val out = between(context, from.atZone(zone).toInstant().toEpochMilli(), to.atZone(zone).toInstant().toEpochMilli()) ?: return emptyList()
+        return if (range == CalendarRange.NEXT) out.filter { !it.allDay }.take(1).ifEmpty { out.take(1) } else out
+    }
+
+    /**
+     * The next event (or, for [past], the latest one) within a year whose title has every word of [what]:
+     * "my vacation" finds "Vacation in Maine", "dentist" finds "Dentist appointment".
+     */
+    fun find(context: Context, what: String, past: Boolean = false, now: LocalDateTime = LocalDateTime.now()): CalEvent? {
+        val words = what.lowercase().split(Regex("[^a-z0-9']+"))
+            .filter { it.length > 1 && it !in setOf("my", "the", "our", "a", "an", "next", "upcoming", "appointment", "event") }
+            .map { it.removeSuffix("'s") }
+        if (words.isEmpty()) return null
+        val zone = ZoneId.systemDefault()
+        val nowMs = now.atZone(zone).toInstant().toEpochMilli()
+        val year = 366L * 86_400_000L
+        val events = (if (past) between(context, nowMs - year, nowMs) else between(context, nowMs, nowMs + year)) ?: return null
+        val hits = events.filter { e -> val t = e.title.lowercase(); words.all { it in t } }
+        return if (past) hits.lastOrNull { it.begin <= nowMs } else hits.firstOrNull()
+    }
+
+    private fun between(context: Context, start: Long, end: Long): List<CalEvent>? {
+        val zone = ZoneId.systemDefault()
         val uri = CalendarContract.Instances.CONTENT_URI.buildUpon().also {
             ContentUris.appendId(it, start - 86_400_000L) // all-day events are stored in UTC
             ContentUris.appendId(it, end)
@@ -139,9 +160,9 @@ object CalendarReader {
                 }
             }
         } catch (e: Exception) {
-            return emptyList()
+            return null
         }
-        return if (range == CalendarRange.NEXT) out.filter { !it.allDay }.take(1).ifEmpty { out.take(1) } else out
+        return out
     }
 
     private fun time(ms: Long) = TimeParser.speakTime(Instant.ofEpochMilli(ms).atZone(ZoneId.systemDefault()).toLocalTime())

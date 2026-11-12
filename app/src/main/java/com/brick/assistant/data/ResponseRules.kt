@@ -30,6 +30,9 @@ object ResponseRules {
     val all: List<ResponseRule> = buildList {
         val m = Category.MUSIC
         add(ResponseRule("driver", m, "Driver", null, listOf("Spinning it up in Driver.", "Driver is on it.")))
+        add(ResponseRule("music.listen", m, "Where to listen to a song", null, listOf("Let me check the stations.", "Finding you a stream.")))
+        add(ResponseRule("music.buy", m, "Where to buy a song", null, listOf("Let me check the record stores.", "Shopping for tracks.")))
+        add(ResponseRule("music.credits", m, "Song credits (singer, producer, writers)", null, listOf("Reading the liner notes.", "Let me check the credits.")))
         add(ResponseRule("driver.play", m, "Driver › Play", "driver"))
         kinds.forEach { (k, l) -> add(ResponseRule("driver.play.$k", m, "Driver › Play › $l", "driver.play")) }
         add(ResponseRule("driver.effect", m, "Driver › Audio effects", "driver"))
@@ -43,6 +46,7 @@ object ResponseRules {
         add(ResponseRule("driver.preset", m, "Driver › Presets", "driver", listOf("Loading your preset.", "Good taste.")))
         effects.forEach { (e, l) -> add(ResponseRule("driver.preset.$e", m, "Driver › Presets › $l", "driver.preset")) }
         add(ResponseRule("driver.lyrics", m, "Driver › Lyrics", "driver", listOf("Let me find the words.", "Fetching the lyrics.")))
+        add(ResponseRule("music.lyrics", m, "Lyrics", null, listOf("Let me find the words.", "Pulling up the lyrics.")))
         add(ResponseRule("driver.nowplaying", m, "Driver › What's playing", "driver", listOf("Let me check.", "One moment.")))
         add(ResponseRule("spotify", m, "Spotify", null, listOf("Firing up Spotify.", "Spotify it is.")))
         kinds.forEach { (k, l) -> add(ResponseRule("spotify.play.$k", m, "Spotify › Play › $l", "spotify")) }
@@ -56,6 +60,7 @@ object ResponseRules {
         add(ResponseRule("timers.resume", t, "Resume a timer", null, listOf("And we're back.", "Picking up where we left off.")))
         add(ResponseRule("timers.cancel", t, "Cancel or stop a timer", null, listOf("Done.", "All clear.")))
         add(ResponseRule("timers.status", t, "Time left", null, listOf("Let me check the clock.", "One moment.")))
+        add(ResponseRule("stopwatch", t, "Stopwatch", null, listOf("Clock's running.", "Timing it.")))
 
         val y = Category.YOUTUBE
         add(ResponseRule("youtube.play", y, "Play a video", null, listOf("Rolling the tape.", "Press play, done.")))
@@ -65,9 +70,33 @@ object ResponseRules {
         val se = Category.SEARCH
         add(ResponseRule("search.web", se, "When you ask to search", null))
         add(ResponseRule("search.question", se, "Questions (answered without a web search)", null, listOf("Let me think.", "Good question.", "Hmm.")))
+        add(ResponseRule("search.person", se, "Public figures (actors, singers, YouTubers...)", null, listOf("Ah, a famous face.", "Let me pull their file.")))
+        add(ResponseRule("search.movie", se, "Movies", null, listOf("Rolling the credits.", "Let me check the reel.")))
+        add(ResponseRule("search.tv_show", se, "TV shows", null, listOf("Changing the channel.", "Let me check the listings.")))
+        add(ResponseRule("search.platform", se, "Apps, sites and platforms", null, listOf("Logging on.", "Let me look it up.")))
+        add(ResponseRule("search.company", se, "Companies and brands", null, listOf("Checking the books.", "Let me look into them.")))
+        add(ResponseRule("search.game", se, "Video games", null, listOf("Pressing start.", "Let me look it up.")))
+        add(ResponseRule("search.music", se, "Songs, albums and bands", null, listOf("Dropping the needle.", "Let me look it up.")))
+        add(ResponseRule("search.book", se, "Books", null, listOf("Opening the book on that.", "Let me check the shelves.")))
+        add(ResponseRule("search.place", se, "Places", null, listOf("Checking the atlas.", "Let me look it up.")))
+        add(ResponseRule("search.spell", se, "Spelling", null, listOf("Spelling bee time.", "Letter by letter.")))
+        add(ResponseRule("media.rating", se, "Movie and TV ratings", null, listOf("Let me check with the critics.", "Pulling the scores.")))
+        add(ResponseRule("media.watch", se, "Where to watch", null, listOf("Checking the listings.", "Let me find a screen for that.")))
+        add(ResponseRule("media.buy", se, "Where to buy movies and shows", null, listOf("Let me check the shelves.", "Shopping around.")))
+
+        val ma = Category.MATH
+        add(ResponseRule("math.calc", ma, "Calculations", null))
+        add(ResponseRule("math.convert", ma, "Unit conversions", null, listOf("Converting.", "Let me run the numbers.")))
+
+        val we = Category.WEATHER
+        add(ResponseRule("weather.today", we, "Today", null))
+        add(ResponseRule("weather.tomorrow", we, "Tomorrow", null, listOf("Peeking at tomorrow.")))
+        add(ResponseRule("weather.week", we, "This week", null, listOf("Let me look at the week ahead.")))
+        add(ResponseRule("weather.weekend", we, "The weekend", null, listOf("Checking the weekend.")))
 
         val dv = Category.DEVICE
         add(ResponseRule("device.time", dv, "Time and date", null, listOf("Let me check the clock.", "Time check.")))
+        add(ResponseRule("device.countdown", dv, "Countdowns", null, listOf("Counting the days.", "Let me count.")))
         add(ResponseRule("device.flashlight", dv, "Flashlight", null))
         add(ResponseRule("device.flashlight.on", dv, "Flashlight › On", "device.flashlight", listOf("Let there be light.", "Lights.")))
         add(ResponseRule("device.flashlight.off", dv, "Flashlight › Off", "device.flashlight", listOf("Lights out.", "Back to the dark.")))
@@ -75,7 +104,10 @@ object ResponseRules {
         add(ResponseRule("device.ringer", dv, "Ringer and Do Not Disturb", null, listOf("Shh.", "Got it.")))
         add(ResponseRule("device.battery", dv, "Battery", null, listOf("Checking the juice.", "Let me look.")))
         add(ResponseRule("device.brightness", dv, "Brightness", null))
-        add(ResponseRule("device.connections", dv, "Wi-Fi and Bluetooth", null))
+        add(ResponseRule("device.connections", dv, "Wi-Fi and Bluetooth (older)", null))
+        add(ResponseRule("device.settings", dv, "Phone settings (Wi-Fi, airplane mode, rotation...)", null, listOf("On it.", "Let me flip that.")))
+        add(ResponseRule("device.settings.where", dv, "Phone settings › Where is it", "device.settings", listOf("Let me show you where.", "It's in there somewhere. Found it.")))
+        add(ResponseRule("device.smarthome", dv, "Smart home and lights", null, listOf("Talking to the house.", "On it.")))
 
         val r = Category.READING
         add(ResponseRule("read.notifications", r, "Notifications", null))
@@ -93,6 +125,7 @@ object ResponseRules {
         add(ResponseRule("maps.food", n, "Food spots", null, listOf("Let's get you fed.", "Sniffing out something good.", "On it. My treat. Not really.")))
         add(ResponseRule("maps.shopping", n, "Shopping and stores", null, listOf("Time to spend some money.", "Let me find a store.")))
         add(ResponseRule("maps.places", n, "Other places (gas, gyms, salons...)", null, listOf("Let me find one.", "Looking around.")))
+        add(ResponseRule("maps.saved", n, "Saved places (take me home)", null, listOf("Taking you there.", "I know the way.")))
 
         val s = Category.NIGHT_SKY
         add(ResponseRule("sky.bortle", s, "Bortle level", null, listOf("Measuring the glow.", "Let me check the light pollution.")))

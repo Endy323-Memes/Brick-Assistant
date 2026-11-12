@@ -101,6 +101,38 @@ object RobotFx {
         return PcmAudio(out, sr)
     }
 
+    /**
+     * Makes a spoken question end on a rise: the pitch glides up over the last voiced stretch ([window] seconds,
+     * or from [from] when the last word's start is known) until the ending sits about [target] times the
+     * voice's median pitch. Audio whose ending already rises that much is left alone, so a recording that
+     * asks properly isn't pushed higher.
+     */
+    fun questionRise(input: PcmAudio, target: Float = 1.28f, window: Float = 0.45f, from: Int = -1): PcmAudio {
+        val sr = input.sampleRate
+        val x = input.samples
+        if (x.size < sr / 5) return input
+        val track = PitchTracker.track(x, sr)
+        val median = track.median() ?: return input
+        // The last voiced sample, and the stretch before it that carries the rise.
+        var end = -1
+        for (i in track.f0.indices.reversed()) if (track.f0[i] > 0f) { end = (i + 1) * track.hop; break }
+        if (end <= 0) return input
+        end = minOf(end, x.size)
+        val start = if (from in 0 until end - sr / 20) maxOf(from, end - (sr * 0.8f).toInt()) else maxOf(0, end - (sr * window).toInt())
+        // How high the ending already is (the last fifth of the stretch).
+        val tail = (start + (end - start) * 4 / 5 until end step track.hop).map { track.at(it) }.filter { it > 0f }.sorted()
+        val now = if (tail.isEmpty()) 1f else tail[tail.size / 2] / median
+        val peak = (target / now).coerceIn(1f, 1.45f)
+        if (peak < 1.04f) return input
+        val y = Psola.shiftAt(x, sr, track) { i, _ ->
+            if (i < start) 1f else {
+                val t = ((i - start).toFloat() / (end - start)).coerceIn(0f, 1f)
+                1f + (peak - 1f) * t * t * (3 - 2 * t) // smoothstep: eases in, keeps climbing to the end
+            }
+        }
+        return PcmAudio(y, sr)
+    }
+
     /** Cuts natural speech off just before its end, mid-word (responses ending in "-"). */
     fun cutEnd(input: PcmAudio): PcmAudio {
         val sr = input.sampleRate
@@ -132,7 +164,7 @@ object RobotFx {
         return x
     }
 
-    fun process(input: PcmAudio, s: AppSettings): PcmAudio {
+    fun process(input: PcmAudio, s: AppSettings, question: Boolean = false): PcmAudio {
         val sr = input.sampleRate
         if (input.samples.size < sr / 20) return input
 
@@ -140,6 +172,8 @@ object RobotFx {
         var x = matchVoice(
             input.samples.copyOf(), sr, s.robotTargetF0, s.robotExpressiveness, s.robotEqStrength, REFERENCE_DB,
         )
+        // A question keeps a rising ending even when the pitch match evens out the melody.
+        if (question) x = questionRise(PcmAudio(x, sr)).samples
 
         // 3. Optional extras
         if (s.ringMix > 0.001f) {
@@ -374,7 +408,11 @@ object PitchTracker {
 /** Time-domain pitch-synchronous overlap-add: changes pitch, keeps duration and formants. */
 object Psola {
     /** [factorFor] maps a frame's pitch (Hz) to its pitch-change ratio. */
-    fun shift(x: FloatArray, sr: Int, track: PitchTrack, factorFor: (Float) -> Float): FloatArray {
+    fun shift(x: FloatArray, sr: Int, track: PitchTrack, factorFor: (Float) -> Float): FloatArray =
+        shiftAt(x, sr, track) { _, f0 -> factorFor(f0) }
+
+    /** Like [shift], but [factorAt] also gets the sample position, for pitch that moves over time (a rising question). */
+    fun shiftAt(x: FloatArray, sr: Int, track: PitchTrack, factorAt: (Int, Float) -> Float): FloatArray {
         // Analysis marks, one per pitch period, snapped to local peaks for consistent alignment.
         val marks = ArrayList<Int>()
         val factors = ArrayList<Float>()
@@ -394,7 +432,7 @@ object Psola {
                 }
                 var best = lo
                 for (i in lo..hi) if (x[i] > x[best]) best = i
-                marks += best; periods += p; voiced += true; factors += factorFor(f0)
+                marks += best; periods += p; voiced += true; factors += factorAt(best, f0)
                 t = best + p
                 prevVoiced = true
             } else {
