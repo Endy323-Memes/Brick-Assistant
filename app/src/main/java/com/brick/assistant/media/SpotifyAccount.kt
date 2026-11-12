@@ -30,7 +30,7 @@ object SpotifyAccount {
     // user-library-modify: "I like this song" saves to your Liked Songs.
     // playlist-modify-*: "add this song to my <name> playlist".
     private const val SCOPES = "playlist-read-private playlist-read-collaborative user-library-read user-library-modify " +
-        "playlist-modify-public playlist-modify-private"
+        "playlist-modify-public playlist-modify-private user-read-currently-playing"
 
     private fun prefs(c: Context) = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -112,6 +112,27 @@ object SpotifyAccount {
     }
 
     /** GET a Web API endpoint as the user. */
+    /** A GET's answer with its HTTP code, and how many seconds Spotify said to wait (Retry-After) when it's 429. */
+    class Answer(val code: Int, val json: JSONObject?, val retryAfterSec: Long?)
+
+    /** Like [api], but says why when there's no answer (204 nothing playing, 401/403 no permission, 429 slow down). */
+    fun get(c: Context, url: String): Answer? {
+        val t = accessToken(c) ?: return null
+        return try {
+            val conn = URL(url).openConnection() as HttpURLConnection
+            conn.connectTimeout = 5000
+            conn.readTimeout = 5000
+            conn.setRequestProperty("Authorization", "Bearer $t")
+            val code = conn.responseCode
+            val json = if (code == 200) conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }.let { JSONObject(it) } else null
+            val wait = conn.getHeaderField("Retry-After")?.trim()?.toLongOrNull()
+            conn.disconnect()
+            Answer(code, json, wait)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     fun api(c: Context, url: String): JSONObject? {
         val t = accessToken(c) ?: return null
         return try {

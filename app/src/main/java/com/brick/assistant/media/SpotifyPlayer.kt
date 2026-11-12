@@ -124,6 +124,65 @@ object SpotifyPlayer {
     suspend fun trackId(context: Context, title: String, artist: String?): String? =
         apiSearch(context, Kind.TRACK, title, artist)?.substringAfterLast(':')?.takeIf { it.isNotBlank() }
 
+    /** A track exactly as Spotify's catalog has it: for finding the right version of its lyrics. */
+    data class TrackDetails(val name: String, val artists: List<String>, val album: String?, val durationMs: Long?, val isrc: String?)
+
+    private fun details(o: JSONObject): TrackDetails? {
+        val name = o.optString("name").takeIf { it.isNotBlank() } ?: return null
+        val arr = o.optJSONArray("artists")
+        val artists = (0 until (arr?.length() ?: 0)).mapNotNull { arr?.optJSONObject(it)?.optString("name")?.takeIf { n -> n.isNotBlank() } }
+        return TrackDetails(
+            name, artists,
+            o.optJSONObject("album")?.optString("name")?.takeIf { it.isNotBlank() },
+            o.optLong("duration_ms").takeIf { it > 0 },
+            o.optJSONObject("external_ids")?.optString("isrc")?.takeIf { it.isNotBlank() },
+        )
+    }
+
+    /**
+     * The song playing in Spotify, from the connected account's catalog: by its track ID when Spotify's media
+     * session gives one ([mediaId] "spotify:track:..."), otherwise the search hit closest in title, artist and
+     * length. Null when Spotify isn't connected or nothing matches well.
+     */
+    suspend fun trackDetails(context: Context, title: String, artist: String?, durationMs: Long?, mediaId: String?): TrackDetails? = withContext(Dispatchers.IO) {
+        if (!SpotifyAccount.isConnected(context)) return@withContext null
+        mediaId?.let { Regex("spotify:track:([A-Za-z0-9]{10,})").find(it)?.groupValues?.get(1) }?.let { id ->
+            SpotifyAccount.api(context, "https://api.spotify.com/v1/tracks/$id")?.let(::details)?.let { return@withContext it }
+        }
+        val q = if (artist.isNullOrBlank()) title else "$title artist:$artist"
+        val items = SpotifyAccount.api(context, "https://api.spotify.com/v1/search?type=track&limit=10&q=" + URLEncoder.encode(q, "UTF-8"))
+            ?.optJSONObject("tracks")?.optJSONArray("items") ?: return@withContext null
+        val scored = (0 until items.length()).mapNotNull { i ->
+            val d = items.optJSONObject(i)?.let(::details) ?: return@mapNotNull null
+            var s = similarity(d.name, title)
+            if (!artist.isNullOrBlank() && d.artists.any { similarity(it, artist) >= 0.6 }) s += 0.3
+            // The same length (within a couple of seconds) is the best sign it's this exact version.
+            if (durationMs != null && d.durationMs != null) {
+                val off = kotlin.math.abs(d.durationMs - durationMs)
+                s += when { off <= 2000 -> 0.4; off <= 8000 -> 0.15; else -> -0.2 }
+            }
+            d to s
+        }
+        val best = scored.maxByOrNull { it.second } ?: return@withContext null
+        Log.i(TAG, "track details '$q' -> ${best.first.name} / ${best.first.album} (${best.second})")
+        if (best.second >= 0.8) best.first else null
+    }
+
+    /** Where the connected account's song is right now, for [SpotifySync] (blocking: call it off the main thread). */
+    fun nowPlaying(context: Context): SpotifySync.Reading? {
+        val a = SpotifyAccount.get(context, "https://api.spotify.com/v1/me/player/currently-playing?market=from_token") ?: return null
+        return when (a.code) {
+            200 -> a.json?.let { o ->
+                SpotifySync.Reading.Now(o.optLong("progress_ms", -1).takeIf { it >= 0 } ?: return null, o.optBoolean("is_playing"),
+                    o.optJSONObject("item")?.optString("name")?.takeIf { it.isNotBlank() })
+            }
+            204 -> SpotifySync.Reading.Idle
+            401, 403 -> SpotifySync.Reading.NoPermission
+            429 -> SpotifySync.Reading.SlowDown(a.retryAfterSec)
+            else -> null
+        }
+    }
+
     private suspend fun apiSearch(context: Context, kind: Kind, title: String, artist: String?): String? = withContext(Dispatchers.IO) {
         val q = if (artist.isNullOrBlank() || kind == Kind.ARTIST) title else "$title artist:$artist"
         val o = SpotifyAccount.api(context, "https://api.spotify.com/v1/search?type=${kind.path}&limit=8&q=" + URLEncoder.encode(q, "UTF-8"))

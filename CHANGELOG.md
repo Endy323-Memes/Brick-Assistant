@@ -1,5 +1,22 @@
 # Brick update log
 
+## 1.3
+
+### New features
+- **Lyrics matched with Spotify:** when a song plays in Spotify and your account is connected, Brick looks it up in Spotify's catalog, by its track ID when Spotify shares it, or by title, artist and length. It then asks lrclib.net for that exact version's lyrics (a radio edit, a remaster). If nothing matches, Brick falls back to the usual lookup. The card says `MATCH exact version, by Spotify` when this was used.
+- **Lyrics kept on time with Spotify:** Android's media controls report Spotify's position only now and then. While timed lyrics are on screen and the song plays, Brick asks Spotify for the exact position and corrects the timing by the difference.
+  - To stay within Spotify's rate limit, Brick sends one request at a time, every 20 seconds, or every 45 once the timing holds steady.
+  - After a seek or play/pause it checks again soon, but never within 5 seconds of its last request.
+  - When Spotify says to slow down, Brick waits as long as Spotify asks, then checks half as often.
+  - It ignores slow replies and replies about another song.
+  - **Reconnect Spotify in Settings once to turn this on.** It needs the new "currently playing" permission; until then Brick keeps the usual timing.
+
+### Changes
+- A break in the singing shows `♪ ♪ ♪` in the current-line box instead of an empty box.
+
+### Improvements
+- The lyrics card and the full-screen lyrics redraw every time the screen refreshes, instead of being capped at 30 frames a second, so they move smoothly. They only slow down while the song is paused and nothing moves.
+
 ## 1.2
 
 ### New features

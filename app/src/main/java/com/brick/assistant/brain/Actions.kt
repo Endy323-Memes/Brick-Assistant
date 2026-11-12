@@ -1660,8 +1660,19 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         val artist = req.artist ?: playing?.artist
         val album = md?.getString(android.media.MediaMetadata.METADATA_KEY_ALBUM)
         val durSec = md?.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION)?.takeIf { it > 0 }?.let { (it / 1000).toInt() }
+        // Playing in Spotify with the account connected: its catalog says exactly which version this is
+        // (name, main artist, album, length), so lrclib finds that version's lyrics.
+        val onSpotify = playing?.pkg == com.brick.assistant.media.SpotifyPlayer.PACKAGE
+        val exact = if (onSpotify) com.brick.assistant.media.SpotifyPlayer.trackDetails(
+            context, title, artist, md?.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION)?.takeIf { it > 0 },
+            md?.getString(android.media.MediaMetadata.METADATA_KEY_MEDIA_ID),
+        ) else null
         val doc = (if (playing == null || playing.pkg == DriverBridge.PACKAGE) Lyrics.fromDriver(context, title, artist) else null)
             ?: Lyrics.fromPhone(title, artist)
+            ?: exact?.let { e ->
+                Lyrics.fromLrclib(e.name, e.artists.firstOrNull() ?: artist, e.album, e.durationMs?.let { (it / 1000).toInt() } ?: durSec)
+                    ?.let { it.copy(title = title, artist = artist ?: it.artist, matchedBy = "Spotify") }
+            }
             ?: Lyrics.fromLrclib(title, artist, album, durSec)
         val who = artist?.let { " by $it" } ?: ""
         if (doc == null) return@withContext ActionResult("I couldn't find lyrics for $title$who.")
@@ -1675,28 +1686,39 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             t != null && (t == key(title) || t == key(doc.title)) &&
                 (key(Lyrics.mainArtist(now?.artist)).let { a -> a == null || key(Lyrics.mainArtist(artist)) == null || a == key(Lyrics.mainArtist(artist)) })
         }
+        val sessionPos: () -> Long? = {
+            c?.playbackState?.let { st ->
+                if (st.state == android.media.session.PlaybackState.STATE_PLAYING) {
+                    st.position + ((android.os.SystemClock.elapsedRealtime() - st.lastPositionUpdateTime) * st.playbackSpeed).toLong()
+                } else st.position
+            }
+        }
+        val isPlaying = { c?.playbackState?.state == android.media.session.PlaybackState.STATE_PLAYING }
+        // In Spotify with the account connected: Spotify's exact position now and then keeps the lines on time.
+        val sync = if (onSpotify && c != null && doc.sync != LyricsSync.PLAIN && com.brick.assistant.media.SpotifyAccount.isConnected(context)) {
+            com.brick.assistant.media.SpotifySync(
+                fetch = { com.brick.assistant.media.SpotifyPlayer.nowPlaying(context) },
+                log = { android.util.Log.i("BrickSpotify", it) },
+            )
+        } else null
         val panel = LyricsPanel(
             doc,
-            position = {
-                c?.playbackState?.let { st ->
-                    if (st.state == android.media.session.PlaybackState.STATE_PLAYING) {
-                        st.position + ((android.os.SystemClock.elapsedRealtime() - st.lastPositionUpdateTime) * st.playbackSpeed).toLong()
-                    } else st.position
-                }
-            },
-            playing = { c?.playbackState?.state == android.media.session.PlaybackState.STATE_PLAYING },
-            seek = c?.let { ctl -> { ms: Long -> ctl.transportControls.seekTo(ms) } },
+            position = { sync?.position(sessionPos(), isPlaying(), title, sessionPos) ?: sessionPos() },
+            playing = isPlaying,
+            seek = c?.let { ctl -> { ms: Long -> ctl.transportControls.seekTo(ms); sync?.nudge(); Unit } },
             toggle = c?.let { ctl -> {
                 if (ctl.playbackState?.state == android.media.session.PlaybackState.STATE_PLAYING) ctl.transportControls.pause() else ctl.transportControls.play()
+                sync?.nudge()
             } },
             sameSong = sameSong,
             duration = { c?.metadata?.getLong(android.media.MediaMetadata.METADATA_KEY_DURATION)?.takeIf { it > 0 } },
             app = playing?.app,
         )
         val kind = when (doc.sync) { LyricsSync.WORD -> "word synced"; LyricsSync.LINE -> "line synced"; LyricsSync.PLAIN -> "plain text" }
-        val rows = listOf(
+        val rows = listOfNotNull(
             doc.title + (doc.artist?.let { " - $it" } ?: ""),
             Box.kv("LYRICS", "$kind, from ${doc.source.label}"),
+            doc.matchedBy?.let { Box.kv("MATCH", "exact version, by $it") },
         )
         val line = "Here are the lyrics for ${doc.title}" + (doc.artist?.let { " by $it" } ?: "") +
             (if (doc.sync != LyricsSync.PLAIN && c != null) ", following along." else ".")

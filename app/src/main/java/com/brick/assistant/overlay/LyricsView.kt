@@ -122,7 +122,8 @@ class LyricsView(context: Context) : View(context) {
                 }
                 Item(rows.map { it.toString() }, wr, wx)
             } else {
-                Item(wrap(line.text, avail), IntArray(0), FloatArray(0))
+                // A timed blank line is a break in the singing: show a note rather than an empty box.
+                Item(wrap(if (synced && line.text.isBlank()) "♪ ♪ ♪" else line.text, avail), IntArray(0), FloatArray(0))
             }
         }
     }
@@ -293,9 +294,10 @@ class LyricsView(context: Context) : View(context) {
         fade.shader = LinearGradient(0f, height - f, 0f, height.toFloat(), ViewColors.alpha(edge, 0), edge, Shader.TileMode.CLAMP)
         if (scroll < maxScroll - 1f) canvas.drawRect(0f, height - f, width.toFloat(), height.toFloat(), fade)
 
-        // Keep moving while the song plays (about 30 frames a second) or the list is still gliding.
+        // Every screen refresh while anything moves (the song playing, a glide, a drag or fling, the box resizing);
+        // only a paused, still list waits between redraws.
         if (isShown) {
-            if ((synced && playing) || gliding || touching || flinging || boxMoving) postInvalidateDelayed(FRAME_MS)
+            if ((synced && playing) || gliding || touching || flinging || boxMoving) postInvalidateOnAnimation()
             else postInvalidateDelayed(IDLE_MS)
         }
     }

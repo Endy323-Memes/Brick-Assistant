@@ -23,6 +23,8 @@ data class LyricsDoc(
     val lines: List<LyricLine>,
     val source: LyricsSource,
     val instrumental: Boolean = false,
+    /** What pinned down the exact version looked up ("Spotify"), when something did. */
+    val matchedBy: String? = null,
 ) {
     val sync: LyricsSync = when {
         lines.any { it.words.isNotEmpty() } -> LyricsSync.WORD

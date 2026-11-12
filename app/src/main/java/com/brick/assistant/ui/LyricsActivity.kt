@@ -64,7 +64,7 @@ class LyricsActivity : Activity() {
         root.addView(head)
         root.addView(mono(listOfNotNull(doc.artist, panel.app?.let { "on $it" }).joinToString("  "), 12.5f, ViewColors.text))
         val kind = when (doc.sync) { LyricsSync.WORD -> "word synced"; LyricsSync.LINE -> "line synced"; LyricsSync.PLAIN -> "plain text" }
-        root.addView(mono("$kind · from ${doc.source.label}", 10.5f, ViewColors.unit).apply { setPadding(0, (2 * d).toInt(), 0, (10 * d).toInt()) })
+        root.addView(mono("$kind · from ${doc.source.label}" + (doc.matchedBy?.let { " · matched by $it" } ?: ""), 10.5f, ViewColors.unit).apply { setPadding(0, (2 * d).toInt(), 0, (10 * d).toInt()) })
         root.addView(View(this).apply { setBackgroundColor(ViewColors.alpha(ViewColors.brick, 120)) }, LinearLayout.LayoutParams(-1, (1 * d).toInt().coerceAtLeast(1)))
 
         lyrics = LyricsView(this).apply { fullScreen = true; bind(panel) }
