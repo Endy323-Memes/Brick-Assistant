@@ -585,10 +585,53 @@ object IntentParser {
         val m = rx(
             "^(?:(?:let's|lets|i want to|i need to|i wanna|time to)\\s+)?(?:go|head|get|drive|walk|navigate|take me|bring me|get me|guide me|route me|" +
                 "(?:give me |get |show me (?:the )?)?directions|show me the way|how (?:do|can) i get)(?:\\s+(?:back|over))?\\s+(?:to\\s+)?(.+)$",
-        ).find(t) ?: return null
-        val place = com.brick.assistant.data.Places.find(m.groupValues[1]) ?: return null
-        return Request.Navigate(place.name, directions = true)
+        ).find(t)
+        m?.let { com.brick.assistant.data.Places.find(it.groupValues[1]) }?.let { return Request.Navigate(it.name, directions = true) }
+        return looseSavedPlace(t)
     }
+
+    // Any travel word anywhere: "I'm heading home", "what's the fastest way to work", "how long to get to mom's".
+    private val TRAVEL = Regex(
+        "\\b(?:go|goin|going|gonna|head|heading|headed|take me|bring me|get me|guide me|lead me|drive|driving|walk|walking|" +
+            "ride|riding|bike|biking|commute|navigate|navigation|directions?|route|routes|way|get to|get home|get back|back to|" +
+            "leave for|leaving for|on my way|eta|how far|how long|travel|trip|steer)\\b",
+    )
+
+    // Just the place on the map: "where's work on the map", "show me mom's house".
+    private val MAP_ONLY = Regex("\\b(?:map|maps|show me|show|where(?:'s| is)|locate|pin|pull up)\\b")
+
+    // Other requests that may mention a saved place ("text mom I'm heading home", "remind me to go to work at 8").
+    private val NOT_TRAVEL = Regex(
+        "^(?:(?:hey |ok |okay )?brick[, ]+)?(?:text|message|send|reply|tell|call|phone|dial|facetime|email|remind|set|add|create|" +
+            "make|schedule|cancel|delete|play|put on|listen|shuffle|queue|note|take a note|write|search|google|look up|what's the weather|" +
+            "what is the weather|weather|will it|is it (?:going to )?(?:rain|snow|cold|hot|warm|sunny)|turn|open|close|read|check)\\b",
+    )
+
+    /**
+     * Looser saved-place directions: a saved place's name anywhere in the sentence plus any travel word anywhere
+     * ("I need to head back home", "fastest route to work", "can you get me over to mom's house real quick").
+     * Only saved names count, and requests for something else (texts, reminders, music) are left alone.
+     */
+    private fun looseSavedPlace(raw: String): Request? {
+        val s = raw.lowercase()
+        if (NOT_TRAVEL.containsMatchIn(s)) return null
+        val said = com.brick.assistant.data.Places.key(s)
+        val bare = said.replace("'", "")
+        // The longest saved name said as whole words ("mom's house" over "mom").
+        val place = com.brick.assistant.data.Places.all.value
+            .map { it to com.brick.assistant.data.Places.key(it.name) }
+            .filter { (_, k) -> k.isNotEmpty() && (wordIn(said, k) || wordIn(bare, k.replace("'", ""))) }
+            .maxByOrNull { it.second.length }?.first ?: return null
+        return when {
+            TRAVEL.containsMatchIn(s) -> Request.Navigate(place.name, directions = true)
+            MAP_ONLY.containsMatchIn(s) -> Request.Navigate(place.name, directions = false)
+            else -> null
+        }
+    }
+
+    // "work out" is a workout, not the place called Work.
+    private fun wordIn(text: String, word: String) =
+        Regex("(?:^|\\s)" + Regex.escape(word) + "(?:'s|s)?(?=\\s|$)(?!\\s+out\\b)").containsMatchIn(text)
 
     private fun parseNavigation(s: String): Request? {
         fun dest(raw: String) = raw.replace(rx("^(?:the|my)\\s+"), "").replace(rx("\\s+(?:please|now)$"), "").trim()

@@ -39,6 +39,35 @@ class SavedPlacesTest {
     }
 
     @Test
+    fun loosePhrasing() {
+        val home = Request.Navigate("Home", true)
+        val work = Request.Navigate("Work", true)
+        val mom = Request.Navigate("Mom's house", true)
+        assertEquals(home, IntentParser.parse("I'm heading home"))
+        assertEquals(home, IntentParser.parse("I need to head back home"))
+        assertEquals(home, IntentParser.parse("Can you get me home real quick"))
+        assertEquals(home, IntentParser.parse("time to go home"))
+        assertEquals(home, IntentParser.parse("how far am I from home"))
+        assertEquals(home, IntentParser.parse("what's the eta to home"))
+        assertEquals(work, IntentParser.parse("what's the fastest way to work"))
+        assertEquals(work, IntentParser.parse("best route to work"))
+        assertEquals(work, IntentParser.parse("how long will it take to get to work"))
+        assertEquals(work, IntentParser.parse("I'm driving to work"))
+        assertEquals(mom, IntentParser.parse("bring me over to mom's house"))
+        assertEquals(mom, IntentParser.parse("let's drive to my moms house"))
+        assertEquals(Request.Navigate("Mom's house", false), IntentParser.parse("where is mom's house on the map"))
+    }
+
+    @Test
+    fun looseLeavesOtherRequestsAlone() {
+        val nav = { s: String -> (IntentParser.parse(s) as? Request.Navigate)?.destination }
+        for (s in listOf(
+            "text mom I'm heading home", "remind me to go home at 5", "play take me home country roads",
+            "I'm going to work out", "does this work", "what's the weather at home", "call home",
+        )) assertFalse(s, nav(s) == "Home" || nav(s) == "Work" || nav(s) == "Mom's house")
+    }
+
+    @Test
     fun otherRequestsUnchanged() {
         assertFalse(IntentParser.parse("go to the store") == Request.Navigate("Home", true))
         assertTrue(IntentParser.parse("play home by edward sharpe") is Request.Music)
