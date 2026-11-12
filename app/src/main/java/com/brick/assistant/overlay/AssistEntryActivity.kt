@@ -29,6 +29,8 @@ class AssistEntryActivity : Activity() {
     private var controller: AssistController? = null
     /** The floating card in Brick's terminal look (the edge-to-edge intro is unchanged). */
     private lateinit var card: TermCard
+    /** The readout card (when shown) above Brick's card. */
+    private lateinit var stack: android.widget.LinearLayout
     private lateinit var edgeGlow: EdgeGlowView
     private var started = false
     private var closing = false
@@ -81,8 +83,17 @@ class AssistEntryActivity : Activity() {
         val d = resources.displayMetrics.density
         val root = FrameLayout(this)
         card = TermCard(this)
+        // Readouts (the night sky panel) get their own card stacked above Brick's, which keeps its size.
+        val panelCard = PanelCard(this)
+        card.onPanel = { r -> panelCard.show(r) }
+        panelCard.onInteract = { controller?.keepOpen() }
+        stack = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            addView(panelCard, android.widget.LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = (10 * d).toInt() })
+            addView(card, android.widget.LinearLayout.LayoutParams(-1, -2))
+        }
         root.addView(
-            card,
+            stack,
             FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM)
                 .apply {
                     bottomMargin = (14 * d).toInt()
@@ -136,7 +147,8 @@ class AssistEntryActivity : Activity() {
         if (useOverlayIntro) {
             if (playIntro && !IntroOverlay.play(this)) useOverlayIntro = false
             // Leave the card clear of the intro (its window is above the card's).
-            card.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ -> if (!closing) IntroOverlay.setHole(cardRect(v)) }
+            // The hole covers both cards (the readout card sits above Brick's).
+            stack.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ -> if (!closing) IntroOverlay.setHole(cardRect(v)) }
         }
         if (!useOverlayIntro) {
             window.decorView.post {
@@ -277,6 +289,15 @@ class AssistEntryActivity : Activity() {
 
     private fun begin() {
         val c = controller ?: return
+        // Battery's one-purpose gestures: the night sky / photo spots answer right away; the searches listen for
+        // just the song, video or place.
+        val topic = com.brick.assistant.brain.Topic.of(intent?.getStringExtra(EXTRA_TOPIC))
+        intent?.removeExtra(EXTRA_TOPIC) // once: a later onResume or new intent doesn't repeat it
+        c.topic = topic
+        if (topic?.instant != null) {
+            c.runInstant(topic)
+            return
+        }
         // Battery's "Brick card" action: open ready to type (no microphone needed).
         if (intent?.getStringExtra(EXTRA_MODE) == "type") {
             if (!card.typing) card.startTyping()
@@ -323,6 +344,8 @@ class AssistEntryActivity : Activity() {
         if (closing) return
         closing = true
         controller?.cancel()
+        // The readout card leaves with Brick's.
+        (stack.getChildAt(0) as? PanelCard)?.animate()?.alpha(0f)?.setDuration(200)?.start()
         card.animateOut {
             if (useOverlayIntro) {
                 // The intro plays out on its own above everything; the next tap fades it. Brick can go now.
@@ -417,6 +440,8 @@ class AssistEntryActivity : Activity() {
         const val EXTRA_RETURN = "brick_return"
         /** "type" opens the card ready to type; anything else (or nothing) starts listening. */
         const val EXTRA_MODE = "brick_mode"
+        /** A [com.brick.assistant.brain.Topic] id ("spotify", "night_sky"...): a one-purpose request from Battery. */
+        const val EXTRA_TOPIC = "brick_topic"
 
         /** Remembers how the assistant was last triggered (shown in Settings to help troubleshooting). */
         fun recordTrigger(context: Context, intent: Intent?) {

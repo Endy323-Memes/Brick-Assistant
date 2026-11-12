@@ -10,7 +10,8 @@ import kotlin.math.sqrt
 
 /** Understands spoken arithmetic such as "what is 12 times 8" or "square root of 144 plus 3". */
 object MathEvaluator {
-    class Result(val spoken: String, val value: Double) {
+    /** [expression]: the equation in symbols; [steps]: each operation in the order it was worked out. */
+    class Result(val spoken: String, val value: Double, val expression: String = "", val steps: List<String> = emptyList()) {
         val formatted: String get() = format(value)
     }
 
@@ -21,7 +22,8 @@ object MathEvaluator {
     )
 
     private val replacements = listOf(
-        "to the power of" to "^", "raised to the" to "^", "raised to" to "^",
+        // "the" is dropped before these run, so "to the power of" arrives as "to power of".
+        "to the power of" to "^", "to power of" to "^", "raised to the" to "^", "raised to" to "^",
         "multiplied by" to "*", "times" to "*", "divided by" to "/", "over" to "/",
         "plus" to "+", "minus" to "-", "negative" to "-",
         "squared" to "^2", "cubed" to "^3",
@@ -55,7 +57,7 @@ object MathEvaluator {
         return try {
             val p = Parser(e)
             val v = p.parseAll()
-            Result(speakable(human), v)
+            Result(speakable(human), v, pretty(e), p.steps)
         } catch (ex: Exception) {
             null
         }
@@ -78,8 +80,22 @@ object MathEvaluator {
         return if (s.startsWith("-")) "negative " + s.substring(1) else s
     }
 
+    /** A number as digits ("-3", "0.33333333"), for the worked steps. */
+    fun plain(v: Double): String = format(v).replace("negative ", "-")
+
+    /** The equation in symbols: "12 x 8 + 3", "sqrt 144". */
+    private fun pretty(e: String): String = e.replace("*", " x ").replace("/", " / ").replace("+", " + ")
+        .replace(Regex("(?<=[\\d)])\\s*-\\s*"), " - ").replace("#", " mod ").replace("^", "^")
+        .replace("sqrt", "sqrt ").replace(Regex("\\s+"), " ").trim()
+
     private class Parser(val s: String) {
         var i = 0
+        val steps = ArrayList<String>()
+
+        fun step(a: Double, op: String, b: Double, r: Double): Double {
+            steps += "${plain(a)} $op ${plain(b)} = ${plain(r)}"
+            return r
+        }
 
         fun parseAll(): Double {
             val v = expr()
@@ -95,8 +111,8 @@ object MathEvaluator {
             var v = term()
             while (true) {
                 when (peek()) {
-                    '+' -> { i++; v += term() }
-                    '-' -> { i++; v -= term() }
+                    '+' -> { i++; val b = term(); v = step(v, "+", b, v + b) }
+                    '-' -> { i++; val b = term(); v = step(v, "-", b, v - b) }
                     else -> return v
                 }
             }
@@ -106,10 +122,10 @@ object MathEvaluator {
             var v = unary()
             while (true) {
                 when (peek()) {
-                    '*' -> { i++; v *= unary() }
-                    '/' -> { i++; v /= unary() }
-                    '#' -> { i++; v %= unary() }
-                    '(' -> v *= unary() // implicit multiplication: 2(3+4)
+                    '*' -> { i++; val b = unary(); v = step(v, "x", b, v * b) }
+                    '/' -> { i++; val b = unary(); v = step(v, "/", b, v / b) }
+                    '#' -> { i++; val b = unary(); v = step(v, "mod", b, v % b) }
+                    '(' -> { val b = unary(); v = step(v, "x", b, v * b) } // implicit multiplication: 2(3+4)
                     else -> return v
                 }
             }
@@ -123,12 +139,12 @@ object MathEvaluator {
 
         fun power(): Double {
             val base = primary()
-            return if (peek() == '^') { i++; base.pow(unary()) } else base
+            return if (peek() == '^') { i++; val b = unary(); step(base, "^", b, base.pow(b)) } else base
         }
 
         fun primary(): Double {
             skip()
-            if (s.startsWith("sqrt", i)) { i += 4; return sqrt(unary()) }
+            if (s.startsWith("sqrt", i)) { i += 4; val a = unary(); val r = sqrt(a); steps += "sqrt(${plain(a)}) = ${plain(r)}"; return r }
             if (s.startsWith("pi", i)) { i += 2; return PI }
             if (peek() == '(') {
                 i++

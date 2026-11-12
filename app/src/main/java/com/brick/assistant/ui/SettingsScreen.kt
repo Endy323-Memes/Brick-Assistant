@@ -296,9 +296,84 @@ fun SettingsScreen(vm: AssistantViewModel, requestPermissions: (Array<String>) -
             }
         }
 
+        // ------------------------------------------------------------ Night sky
+        Section(
+            "Location privacy", TermBlue,
+            listOfNotNull(
+                "Sky coordinates " + if (s.hideSkyCoords) "hidden" else "shown",
+                "sky obscured".takeIf { s.obscureSkyLocation },
+                "weather place hidden".takeIf { s.hideWeatherPlace && !s.obscureWeatherLocation },
+                "weather obscured".takeIf { s.obscureWeatherLocation },
+            ).joinToString(", "),
+        ) {
+            SwitchRow(
+                "Hide coordinates",
+                s.hideSkyCoords,
+                "Never show latitude and longitude on night sky readouts. Or end any question with \"hide cords\" or \"no coordinates\" to hide them that once.",
+            ) { v -> update { it.copy(hideSkyCoords = v) } }
+            SwitchRow(
+                "Obscure night sky location",
+                s.obscureSkyLocation,
+                "Night sky answers stay correct for where you are, but name a random decoy place at least the distance below away. " +
+                    "Or end any question with \"obscure my location\" (optionally \"by 500 miles\") for that one answer.",
+            ) { v -> update { it.copy(obscureSkyLocation = v) } }
+            SwitchRow(
+                "Hide weather location",
+                s.hideWeatherPlace,
+                "Weather for where you are never names the place. Or end a weather question with \"hide my location\".",
+            ) { v -> update { it.copy(hideWeatherPlace = v) } }
+            SwitchRow(
+                "Obscure weather location",
+                s.obscureWeatherLocation,
+                "Your real forecast, under a random decoy place at least the distance below away. Or end a weather question with \"obscure my location\".",
+            ) { v -> update { it.copy(obscureWeatherLocation = v) } }
+            if (s.obscureSkyLocation || s.obscureWeatherLocation) {
+                LabeledSlider(
+                    "Minimum decoy distance", s.obscureMinMiles.toFloat(), 100f..3000f, 28, { "%,d mi".format(it.roundToInt()) },
+                ) { v -> update { it.copy(obscureMinMiles = v.roundToInt()) } }
+            }
+        }
+
+        // ------------------------------------------------------------ Quiet outdoors
+        Section("Quiet outdoors", TermBlue, if (s.quietOutdoors) "On · above ${"%,d".format(s.outdoorLux)} lux" else "Off") {
+            SwitchRow(
+                "Text only when outside",
+                s.quietOutdoors,
+                "In bright light, Brick and the unit don't speak. Answers still show as text. Headphones and the car still hear them.",
+            ) { v -> update { it.copy(quietOutdoors = v) } }
+            if (s.quietOutdoors) {
+                // 0 to 500 lux in steps of 5.
+                LabeledSlider(
+                    "Outdoor light level",
+                    s.outdoorLux.toFloat(),
+                    0f..500f,
+                    steps = 99,
+                    format = { "%,d lux".format(roundLux(it)) },
+                ) { v -> roundLux(v).let { l -> if (l != s.outdoorLux) update { it.copy(outdoorLux = l) } } }
+                val lux = liveLux()
+                Hint(
+                    if (lux == null) "No light sensor reading." else
+                        "Light here now: ${"%,d".format(lux.roundToInt())} lux, " +
+                            (if (lux >= s.outdoorLux) "so Brick would stay quiet." else "so Brick would speak.") +
+                            " Indoors is usually 100 to 300 lux, and daylight outside is well over 500. It only works in daylight.",
+                )
+            }
+        }
+
         // ------------------------------------------------------------ Weather
-        val weatherSummary = (if (s.useFahrenheit) "°F" else "°C") + " · " + s.homeCity.ifBlank { "your location" } +
-            " · " + (if (s.accuWeatherKey.isBlank()) "Open-Meteo" else "AccuWeather")
+        val weatherSources = listOf(
+            "auto" to "Automatic",
+            "accuweather" to "AccuWeather",
+            "open_meteo" to "Open-Meteo (no key)",
+        ) + com.brick.assistant.brain.WeatherProvider.entries.map { it.id to it.label + if (it.needsKey) "" else " (no key)" }
+        val provider = com.brick.assistant.brain.WeatherProvider.of(s.weatherSource)
+        val sourceName = when {
+            provider != null -> provider.label
+            s.weatherSource == "open_meteo" -> "Open-Meteo"
+            s.accuWeatherKey.isBlank() -> "Open-Meteo"
+            else -> "AccuWeather"
+        }
+        val weatherSummary = (if (s.useFahrenheit) "°F" else "°C") + " · " + s.homeCity.ifBlank { "your location" } + " · " + sourceName
         Section("Weather", TermBlue, weatherSummary) {
             SwitchRow("Fahrenheit", s.useFahrenheit) { v -> update { it.copy(useFahrenheit = v) } }
             OutlinedTextField(
@@ -308,23 +383,49 @@ fun SettingsScreen(vm: AssistantViewModel, requestPermissions: (Array<String>) -
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            OutlinedTextField(
-                value = s.accuWeatherKey,
-                onValueChange = { v -> update { it.copy(accuWeatherKey = v.trim()) }; accuStatus = "" },
-                label = { Text("AccuWeather API key (optional)") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+            Picker("Weather source", s.weatherSource, weatherSources) { v -> update { it.copy(weatherSource = v) }; accuStatus = "" }
+            // The key for the source in use: AccuWeather's own field, or the picked source's.
+            val keyId = provider?.id ?: if (s.weatherSource == "open_meteo") null else "accuweather"
+            val keyLabel = provider?.label ?: "AccuWeather"
+            val keyValue = if (keyId == "accuweather") s.accuWeatherKey else keyId?.let { s.weatherKeys[it] }.orEmpty()
+            if (keyId != null && (provider == null || provider.needsKey)) {
+                OutlinedTextField(
+                    value = keyValue,
+                    onValueChange = { v ->
+                        update {
+                            if (keyId == "accuweather") it.copy(accuWeatherKey = v.trim())
+                            else it.copy(weatherKeys = (it.weatherKeys + (keyId to v.trim())).filterValues { k -> k.isNotBlank() })
+                        }
+                        accuStatus = ""
+                    },
+                    label = { Text("$keyLabel API key" + if (s.weatherSource == "auto") " (optional)" else "") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Hint(
+                when {
+                    provider != null -> provider.note + " If it fails, Brick uses Open-Meteo."
+                    s.weatherSource == "open_meteo" -> "Free, no key, worldwide, 16 days."
+                    s.weatherSource == "auto" -> "Without a key, Brick uses Open-Meteo. AccuWeather's free key covers 5 days; Open-Meteo fills in the rest of the week."
+                    else -> "AccuWeather's free key covers 5 days; Open-Meteo fills in the rest of the week, and takes over if AccuWeather fails."
+                },
             )
-            Hint("Without a key, Brick uses Open-Meteo.")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { openUrl(context, "https://developer.accuweather.com/") }) { Text("Get a key") }
-                OutlinedButton(enabled = s.accuWeatherKey.isNotBlank(), onClick = {
+            if (keyId != null && (provider == null || provider.needsKey)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { openUrl(context, provider?.keyUrl ?: "https://developer.accuweather.com/") }) { Text("Get a key") }
+                    OutlinedButton(enabled = keyValue.isNotBlank(), onClick = {
+                        accuStatus = "Testing…"
+                        scope.launch {
+                            accuStatus = com.brick.assistant.brain.WeatherSource.testKey(keyId, keyValue) ?: "$keyLabel key works."
+                        }
+                    }) { Text("Test key") }
+                }
+            } else if (provider != null) {
+                OutlinedButton(onClick = {
                     accuStatus = "Testing…"
-                    scope.launch {
-                        accuStatus = com.brick.assistant.brain.WeatherSource.testAccuWeatherKey(s.accuWeatherKey)
-                            ?: "AccuWeather key works."
-                    }
-                }) { Text("Test key") }
+                    scope.launch { accuStatus = com.brick.assistant.brain.WeatherSource.testKey(provider.id, "") ?: "${provider.label} works (tested with Chicago)." }
+                }) { Text("Test source") }
             }
             if (accuStatus.isNotEmpty()) Text(accuStatus, style = MaterialTheme.typography.bodySmall, color = RobotColor)
         }
@@ -338,6 +439,11 @@ fun SettingsScreen(vm: AssistantViewModel, requestPermissions: (Array<String>) -
         Section("Music", TermBlue, musicApps.firstOrNull { it.first == s.musicPackage }?.second ?: s.musicPackage) {
             Picker("Music app", s.musicPackage, musicApps) { v -> update { it.copy(musicPackage = v) } }
             SpotifyAccountSection()
+        }
+
+        // ------------------------------------------------------------ Places
+        Section("Places", TermBlue, placesSummary()) {
+            PlacesContent()
         }
 
         // ------------------------------------------------------------ Setup
@@ -605,4 +711,25 @@ private fun Picker(label: String, selected: String, options: List<Pair<String, S
             }
         }
     }
+}
+
+/** 10^[log] lux, rounded to a tidy step (50 below 1,000, then 100, then 500). */
+private fun roundLux(lux: Float): Int = ((lux / 5f).roundToInt() * 5).coerceIn(0, 500)
+
+/** The ambient light level while this is on screen (null without a light sensor). */
+@Composable
+private fun liveLux(): Float? {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var lux by remember { mutableStateOf<Float?>(null) }
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        val sm = context.getSystemService(android.hardware.SensorManager::class.java)
+        val light = sm?.getDefaultSensor(android.hardware.Sensor.TYPE_LIGHT)
+        val listener = object : android.hardware.SensorEventListener {
+            override fun onSensorChanged(e: android.hardware.SensorEvent) { lux = e.values[0] }
+            override fun onAccuracyChanged(sensor: android.hardware.Sensor?, accuracy: Int) {}
+        }
+        if (light != null) sm.registerListener(listener, light, android.hardware.SensorManager.SENSOR_DELAY_NORMAL)
+        onDispose { sm?.unregisterListener(listener) }
+    }
+    return lux
 }

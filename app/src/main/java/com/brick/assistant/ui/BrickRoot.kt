@@ -96,6 +96,10 @@ fun BrickRoot(vm: AssistantViewModel) {
         if (missing.isNotEmpty()) permLauncher.launch(missing)
     }
 
+    LaunchedEffect(vm.requestedTab) {
+        vm.requestedTab?.let { tab = it; vm.requestedTab = null }
+    }
+
     LaunchedEffect(vm.autoListenRequested) {
         if (vm.autoListenRequested && context.hasPermission(Manifest.permission.RECORD_AUDIO)) {
             vm.autoListenRequested = false

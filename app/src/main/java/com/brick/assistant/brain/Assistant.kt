@@ -8,7 +8,15 @@ import kotlinx.coroutines.coroutineScope
 
 enum class Speaker { USER, DAVID, ROBOT, SYSTEM }
 
-data class LogEntry(val speaker: Speaker, val text: String, val category: Category? = null)
+/** [panel]: a terminal readout ([ActionResult.display]), drawn as-is in monospace and never spoken. */
+data class LogEntry(
+    val speaker: Speaker,
+    val text: String,
+    val category: Category? = null,
+    val panel: Boolean = false,
+    /** The whole readout for a [panel] entry: its picture and live controls too. */
+    val readout: Readout? = null,
+)
 
 /**
  * One assistant turn:
@@ -38,6 +46,16 @@ class Assistant(
     /** Plays the bottom animation in an app's colors (set by the app; respects the setting). */
     @Volatile var onBrand: ((com.brick.assistant.overlay.Brand) -> Unit)? = null
 
+    /**
+     * Asked once per request: true = answer in text only (no Brick or unit audio), e.g. outdoors. Every line still
+     * goes to the log and the cards.
+     */
+    @Volatile var textOnly: suspend () -> Boolean = { false }
+
+    /** The last request was answered in text only (the floating card stays up longer so you can read it). */
+    @Volatile var lastTextOnly = false
+        private set
+
     /** Set while the Android Auto screen is open: starts car navigation to a "geo:" URI. */
     @Volatile var carNavigator: ((String) -> Unit)? = null
 
@@ -51,7 +69,8 @@ class Assistant(
     val awaitingDictation: Boolean
         get() = pendingDictation?.let { System.currentTimeMillis() - it.second < CONFIRM_WINDOW_MS } == true
 
-    suspend fun handle(input: String, onEvent: (LogEntry) -> Unit) {
+    /** [topic]: a one-purpose request from Battery ("Spotify: say a song"); what you said is read for that topic. */
+    suspend fun handle(input: String, topic: Topic? = null, onEvent: (LogEntry) -> Unit) {
         returnToCardUntil = 0L
         // Dictation in progress: what you said is the note itself.
         val d = pendingDictation?.takeIf { System.currentTimeMillis() - it.second < CONFIRM_WINDOW_MS }
@@ -66,7 +85,7 @@ class Assistant(
             // A question with its own answers ("Which one?"): a name or "all" goes to it first.
             p.first.onAnswer?.let { f -> f(answer)?.let { robotOnly(it, onEvent); return } }
             when {
-                p.first.retry != null && yes.matches(answer) -> { handle(p.first.retry!!, onEvent); return }
+                p.first.retry != null && yes.matches(answer) -> { handle(p.first.retry!!, onEvent = onEvent); return }
                 onNext != null && next.matches(answer) -> { robotOnly(onNext(), onEvent); return }
                 yes.matches(answer) -> { robotOnly(p.first.onYes(), onEvent); return }
                 no.matches(answer) -> { robotOnly(ActionResult(p.first.noLine), onEvent); return }
@@ -74,7 +93,7 @@ class Assistant(
             }
         }
 
-        val req = IntentParser.parse(input)
+        val req = topic?.request(input) ?: IntentParser.parse(input)
         // Not understood, but close to a command ("unable lpf"): ask whether that's what you meant.
         if (req is Request.Search && !req.explicit) {
             IntentParser.suggest(input)?.let { fixed ->
@@ -88,12 +107,13 @@ class Assistant(
         // Most specific response rule with lines wins (e.g. Driver › Reverb › Turn on), then the type's pool.
         val davidLine = if (cat == null) null else responses.pick(actions.responseKeys(req))
 
+        val quiet = isQuiet()
         val result = coroutineScope {
-            val davidAudio = async { davidLine?.let { voice.renderDavid(it) } }
+            val davidAudio = async { if (quiet) null else davidLine?.let { voice.renderDavid(it) } }
             val resultD = async { actions.prepare(req) }
-            val robotAudio = async { resultD.await().let { r -> renderLine(r) } }
+            val robotAudio = async { if (quiet) null else resultD.await().let { r -> renderLine(r) } }
 
-            voice.beginSpeaking()
+            if (!quiet) voice.beginSpeaking()
             try {
                 if (davidLine != null) {
                     onEvent(LogEntry(Speaker.DAVID, davidLine, cat))
@@ -103,11 +123,13 @@ class Assistant(
                 // Nothing to open (e.g. skipping a Spotify song): play it with the answer.
                 val brand = early ?: actions.brand
                 if (brand != null && r.after == null) onBrand?.invoke(brand)
+                // The readout goes first so the spoken line stays the last entry (the card shows the last line).
+                r.shown()?.let { onEvent(LogEntry(Speaker.SYSTEM, it.text, cat, panel = true, readout = it)) }
                 if (r.voice != LineVoice.NONE) onEvent(LogEntry(speakerOf(r.voice), r.robotLine, cat))
                 robotAudio.await()?.let { voice.play(it) }
                 r
             } finally {
-                voice.endSpeaking()
+                if (!quiet) voice.endSpeaking()
             }
         }
         result.confirm?.let { pending = it to System.currentTimeMillis() }
@@ -128,13 +150,20 @@ class Assistant(
 
     private fun speakerOf(v: LineVoice) = if (v == LineVoice.BRICK) Speaker.DAVID else Speaker.ROBOT
 
+    /** Text only this time? (A failing check never silences Brick.) */
+    private suspend fun isQuiet(): Boolean =
+        (try { textOnly() } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; false }).also { lastTextOnly = it }
+
     private suspend fun robotOnly(r: ActionResult, onEvent: (LogEntry) -> Unit) {
+        r.shown()?.let { onEvent(LogEntry(Speaker.SYSTEM, it.text, panel = true, readout = it)) }
         if (r.voice != LineVoice.NONE) onEvent(LogEntry(speakerOf(r.voice), r.robotLine))
-        voice.beginSpeaking()
-        try {
-            renderLine(r)?.let { voice.play(it) }
-        } finally {
-            voice.endSpeaking()
+        if (!isQuiet()) {
+            voice.beginSpeaking()
+            try {
+                renderLine(r)?.let { voice.play(it) }
+            } finally {
+                voice.endSpeaking()
+            }
         }
         r.confirm?.let { pending = it to System.currentTimeMillis() }
         r.dictate?.let { pendingDictation = it to System.currentTimeMillis() }

@@ -93,6 +93,14 @@ object ResponseRules {
         add(ResponseRule("maps.food", n, "Food spots", null, listOf("Let's get you fed.", "Sniffing out something good.", "On it. My treat. Not really.")))
         add(ResponseRule("maps.shopping", n, "Shopping and stores", null, listOf("Time to spend some money.", "Let me find a store.")))
         add(ResponseRule("maps.places", n, "Other places (gas, gyms, salons...)", null, listOf("Let me find one.", "Looking around.")))
+
+        val s = Category.NIGHT_SKY
+        add(ResponseRule("sky.bortle", s, "Bortle level", null, listOf("Measuring the glow.", "Let me check the light pollution.")))
+        add(ResponseRule("sky.stars", s, "Visible stars", null, listOf("Counting stars.", "Let me count them for you.")))
+        add(ResponseRule("sky.milkyway", s, "Milky Way", null, listOf("Looking for the galaxy.", "Let me find the Milky Way.")))
+        add(ResponseRule("sky.report", s, "Night sky report", null, listOf("Running the night sky report.", "Here's your sky.")))
+        add(ResponseRule("sky.darkest", s, "Darkest sky search", null, listOf("Hunting for darkness.", "Let me find you some real dark.", "Searching for the darkest skies.")))
+        add(ResponseRule("sky.darkest.world", s, "Darkest sky search › Worldwide", "sky.darkest", listOf("Searching the whole planet.", "Scanning the globe for darkness.")))
     }
 
     private val byKey = all.associateBy { it.key }

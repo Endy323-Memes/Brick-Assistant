@@ -34,6 +34,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -287,10 +288,68 @@ fun TermButton(label: String, color: Color, onClick: () -> Unit) {
     )
 }
 
+private val PANEL_LABEL = Regex("^[A-Z][A-Z/-]{1,6}(?= |$)")
+
+/**
+ * A terminal readout (the night sky panel): the frame dim, the "[ TITLE ]" in Brick's color, row labels in the
+ * unit's color and bar fill ("#") in Brick's color. Never wraps, so the box stays square.
+ */
+@Composable
+internal fun PanelLines(text: String) {
+    val mid = TextMid; val high = TextHigh; val brick = DavidColor; val unit = RobotColor
+    // Built once per text and palette, one style per run of a color (a live readout recomposes twice a second).
+    val styled = remember(text, mid, high, brick, unit) {
+        buildAnnotatedString {
+            text.lines().forEachIndexed { i, line ->
+                if (i > 0) append("\n")
+                if (line.startsWith("+")) {
+                    val t0 = line.indexOf("[ ")
+                    val t1 = line.indexOf(" ]")
+                    if (t0 >= 0 && t1 > t0) {
+                        withStyle(SpanStyle(color = mid)) { append(line.substring(0, t0)) }
+                        withStyle(SpanStyle(color = brick, fontWeight = FontWeight.Bold)) { append(line.substring(t0, t1 + 2)) }
+                        withStyle(SpanStyle(color = mid)) { append(line.substring(t1 + 2)) }
+                    } else withStyle(SpanStyle(color = mid)) { append(line) }
+                    return@forEachIndexed
+                }
+                val body = line.removePrefix("| ").removeSuffix(" |")
+                withStyle(SpanStyle(color = mid)) { append("| ") }
+                val lab = PANEL_LABEL.find(body)?.value.orEmpty()
+                if (lab.isNotEmpty()) withStyle(SpanStyle(color = unit, fontWeight = FontWeight.Bold)) { append(lab) }
+                val rest = body.substring(lab.length)
+                var inBar = false
+                var from = 0
+                var run = mid
+                rest.forEachIndexed { j, c ->
+                    val col = when {
+                        c == '[' -> { inBar = true; mid }
+                        c == ']' -> { inBar = false; mid }
+                        inBar && c == '#' -> brick
+                        inBar -> mid
+                        else -> high
+                    }
+                    if (j > from && col != run) { withStyle(SpanStyle(color = run)) { append(rest.substring(from, j)) }; from = j }
+                    run = col
+                }
+                if (from < rest.length) withStyle(SpanStyle(color = run)) { append(rest.substring(from)) }
+                withStyle(SpanStyle(color = mid)) { append(" |") }
+            }
+        }
+    }
+    Text(
+        styled,
+        Modifier.padding(vertical = 4.dp),
+        style = MaterialTheme.typography.bodySmall,
+        softWrap = false,
+        maxLines = Int.MAX_VALUE,
+    )
+}
+
 /** One line of the session: "$ your request", "brick> ...", "unit> ...", "# system note". */
 @Composable
 private fun LogLine(entry: LogEntry) {
     val style = MaterialTheme.typography.bodyLarge
+    if (entry.panel) { ReadoutView(entry.readout ?: com.brick.assistant.brain.Readout(entry.text)); return }
     when (entry.speaker) {
         Speaker.SYSTEM -> Text(
             buildAnnotatedString {

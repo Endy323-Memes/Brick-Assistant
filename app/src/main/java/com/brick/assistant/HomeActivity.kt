@@ -43,6 +43,8 @@ class HomeActivity : ComponentActivity() {
     }
 
     private fun handleAssist(intent: Intent?) {
+        // A readout's "Brick settings" button: open on that tab.
+        intent?.getIntExtra(EXTRA_TAB, -1)?.takeIf { it >= 0 }?.let { vm.requestedTab = it }
         if (intent?.action == Intent.ACTION_ASSIST || intent?.action == Intent.ACTION_VOICE_COMMAND) {
             vm.autoListenRequested = true
             if (intent.getBooleanExtra(EXTRA_OVERLAY_MISSING, false)) {
@@ -58,5 +60,7 @@ class HomeActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_OVERLAY_MISSING = "overlay_missing"
+        /** Open on this tab (0 assistant, 1 responses, 2 settings). */
+        const val EXTRA_TAB = "tab"
     }
 }

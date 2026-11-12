@@ -66,15 +66,38 @@ data class AppSettings(
     val headsetMic: Boolean = true,
     /** Pause "Hey Brick" while the phone is in a pocket (light and proximity sensors). */
     val pocketPause: Boolean = true,
+    /** Outdoors (bright ambient light): Brick and the unit stay silent and answer in text only. */
+    val quietOutdoors: Boolean = false,
+    /** Light level (lux) at or above which you count as outdoors. Daylight outside is about 1,000 to 100,000 lux. */
+    val outdoorLux: Int = 500,
+    /** Never show latitude and longitude on night sky readouts. */
+    val hideSkyCoords: Boolean = false,
+    /** Night sky readouts name a random decoy place instead of yours, at least [obscureMinMiles] away (100..3000). */
+    val obscureSkyLocation: Boolean = false,
+    val obscureMinMiles: Int = 100,
+    /** Weather answers never name where you are. */
+    val hideWeatherPlace: Boolean = false,
+    /** Weather answers name a random decoy place, at least [obscureMinMiles] away. */
+    val obscureWeatherLocation: Boolean = false,
     val useFahrenheit: Boolean = true,
     val homeCity: String = "",
     /** Optional AccuWeather API key (developer.accuweather.com). Blank = Open-Meteo. */
     val accuWeatherKey: String = "",
+    /** Weather source: "auto" (AccuWeather with a key, else Open-Meteo), "accuweather", "open_meteo", or a [com.brick.assistant.brain.WeatherProvider] id. */
+    val weatherSource: String = "auto",
+    /** API keys for the other weather sources, by source id. */
+    val weatherKeys: Map<String, String> = emptyMap(),
     val musicPackage: String = "",
     val autoSendTexts: Boolean = false,
     /** Plays the bottom animation in Spotify, YouTube or Google Maps colors when Brick uses those apps. */
     val brandGlow: Boolean = true,
 ) {
+    /** The weather source and every key (AccuWeather's stays in its own field). */
+    fun weatherConfig() = com.brick.assistant.brain.WeatherConfig(
+        weatherSource,
+        weatherKeys + (com.brick.assistant.brain.WeatherConfig.ACCUWEATHER to accuWeatherKey),
+    )
+
     fun toJson(): String = JSONObject().apply {
         put("mainVoice", mainVoice)
         put("classicVoice", classicVoice)
@@ -110,9 +133,18 @@ data class AppSettings(
         put("wakeWordEnabled", wakeWordEnabled)
         put("headsetMic", headsetMic)
         put("pocketPause", pocketPause)
+        put("quietOutdoors", quietOutdoors)
+        put("outdoorLux", outdoorLux)
+        put("hideSkyCoords", hideSkyCoords)
+        put("obscureSkyLocation", obscureSkyLocation)
+        put("obscureMinMiles", obscureMinMiles)
+        put("hideWeatherPlace", hideWeatherPlace)
+        put("obscureWeatherLocation", obscureWeatherLocation)
         put("useFahrenheit", useFahrenheit)
         put("homeCity", homeCity)
         put("accuWeatherKey", accuWeatherKey)
+        put("weatherSource", weatherSource)
+        put("weatherKeys", JSONObject().apply { weatherKeys.forEach { (k, v) -> put(k, v) } })
         put("musicPackage", musicPackage)
         put("autoSendTexts", autoSendTexts)
         put("brandGlow", brandGlow)
@@ -175,9 +207,18 @@ data class AppSettings(
                     wakeWordEnabled = o.optBoolean("wakeWordEnabled", d.wakeWordEnabled),
                     headsetMic = o.optBoolean("headsetMic", d.headsetMic),
                     pocketPause = o.optBoolean("pocketPause", d.pocketPause),
+                    quietOutdoors = o.optBoolean("quietOutdoors", d.quietOutdoors),
+                    outdoorLux = (o.optInt("outdoorLux", d.outdoorLux).coerceIn(0, 500) / 5) * 5,
+                    hideSkyCoords = o.optBoolean("hideSkyCoords", d.hideSkyCoords),
+                    obscureSkyLocation = o.optBoolean("obscureSkyLocation", d.obscureSkyLocation),
+                    obscureMinMiles = o.optInt("obscureMinMiles", d.obscureMinMiles),
+                    hideWeatherPlace = o.optBoolean("hideWeatherPlace", d.hideWeatherPlace),
+                    obscureWeatherLocation = o.optBoolean("obscureWeatherLocation", d.obscureWeatherLocation),
                     useFahrenheit = o.optBoolean("useFahrenheit", d.useFahrenheit),
                     homeCity = o.optString("homeCity", d.homeCity),
                     accuWeatherKey = o.optString("accuWeatherKey", d.accuWeatherKey),
+                    weatherSource = o.optString("weatherSource", d.weatherSource),
+                    weatherKeys = o.optJSONObject("weatherKeys")?.let { k -> k.keys().asSequence().associateWith { k.optString(it) } } ?: d.weatherKeys,
                     musicPackage = o.optString("musicPackage", d.musicPackage),
                     autoSendTexts = o.optBoolean("autoSendTexts", d.autoSendTexts),
                     brandGlow = o.optBoolean("brandGlow", d.brandGlow),

@@ -39,8 +39,14 @@ class ActionResult(
     val dictate: (suspend (String) -> ActionResult)? = null,
     /** Who says [robotLine]: the unit (default), Brick's main voice, or nobody (shown only on the card). */
     val voice: LineVoice = LineVoice.UNIT,
+    /** A terminal readout shown under the answer in the log (monospace, never spoken), e.g. the night sky panel. */
+    val display: String? = null,
+    /** The full infographic (box, picture, live controls); [display] is the plain-box shorthand. */
+    val readout: Readout? = null,
     val after: (() -> Unit)? = null,
-)
+) {
+    fun shown(): Readout? = readout ?: display?.let { Readout(it) }
+}
 
 /**
  * An action that waits for the user's yes or no (asked in [ActionResult.robotLine]).
@@ -58,6 +64,9 @@ class Confirmation(
 )
 
 class Actions(private val context: Context, private val settings: SettingsStore) {
+    /** The infographic for each kind of answer. */
+    private val info = Infographics(context)
+
     /** Battery of just the Bluetooth device you asked about; asks which one when several match. */
     private fun btBattery(target: String?): ActionResult {
         val (devices, problem) = DeviceControls.bluetoothDevices(context)
@@ -65,13 +74,14 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         if (devices.isEmpty()) return ActionResult("No Bluetooth devices are connected.")
         val found = BtBattery.matching(target, devices)
         if (found.isEmpty()) return ActionResult(BtBattery.noneLine(target ?: "device"))
-        if (found.size == 1 || target == null) return ActionResult(BtBattery.report(found))
+        if (found.size == 1 || target == null) return ActionResult(BtBattery.report(found), readout = info.btBatteries(found))
         return ActionResult(
             BtBattery.askLine(target, found),
+            readout = info.btBatteries(found),
             confirm = Confirmation(
                 noLine = "Okay.",
-                onYes = { ActionResult(BtBattery.report(found)) },
-                onAnswer = { a -> BtBattery.pick(a, found)?.let { ActionResult(BtBattery.report(it)) } },
+                onYes = { ActionResult(BtBattery.report(found), readout = info.btBatteries(found)) },
+                onAnswer = { a -> BtBattery.pick(a, found)?.let { ActionResult(BtBattery.report(it), readout = info.btBatteries(it)) } },
             ),
         )
     }
@@ -117,11 +127,9 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         },
     )
 
-    /** Changes one of Brick's settings by voice, exactly as the Settings screen would. */
-    private fun setting(req: Request.Setting): ActionResult {
+    private fun isOn(setting: BrickSetting): Boolean {
         val s = settings.current
-        val label = req.setting.label
-        val was = when (req.setting) {
+        return when (setting) {
             BrickSetting.WAKE_WORD -> s.wakeWordEnabled
             BrickSetting.POCKET_PAUSE -> s.pocketPause
             BrickSetting.HEADSET_MIC -> s.headsetMic
@@ -130,6 +138,28 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             BrickSetting.ROBOT_VOICE -> s.unitStyle == "robot"
             BrickSetting.FAHRENHEIT -> s.useFahrenheit
         }
+    }
+
+    /** The answer, plus the setting's readout: a switch to flip it back and a button to Brick's Settings. */
+    private fun setting(req: Request.Setting): ActionResult {
+        val line = changeSetting(req).robotLine
+        val f = req.setting == BrickSetting.FAHRENHEIT
+        return ActionResult(
+            line,
+            readout = info.brickSetting(
+                if (f) "Temperature unit" else req.setting.label,
+                get = { isOn(req.setting) },
+                set = { on -> changeSetting(Request.Setting(req.setting, on)) },
+                onWord = if (f) "Fahrenheit" else "on",
+                offWord = if (f) "Celsius" else "off",
+            ),
+        )
+    }
+
+    /** Changes one of Brick's settings by voice, exactly as the Settings screen would. */
+    private fun changeSetting(req: Request.Setting): ActionResult {
+        val label = req.setting.label
+        val was = isOn(req.setting)
         if (req.setting == BrickSetting.FAHRENHEIT) {
             val unit = if (req.on) "Fahrenheit" else "Celsius"
             if (was == req.on) return ActionResult("I'm already using $unit.")
@@ -293,6 +323,7 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             is Request.ReadCalendar -> readCalendar(req)
             is Request.YouTube -> youtube(req)
             is Request.Timer -> timer(req)
+            is Request.Stopwatch -> stopwatch(req)
             is Request.TimerControl -> timerControl(req)
             is Request.Alarm -> alarm(req)
             is Request.Navigate -> navigate(req)
@@ -322,7 +353,8 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             Request.LikeSong -> ActionResult(com.brick.assistant.media.LikeSong.like(context))
             is Request.AddToPlaylist -> ActionResult(com.brick.assistant.media.LikeSong.addToPlaylist(context, req.playlist))
             is Request.Visualizer -> visualizer(req)
-        }
+            is Request.Sky -> sky(req)
+        }.let { withMusicReadout(req, it) }
     } catch (e: Exception) {
         ActionResult("Something went wrong while handling that request.")
     }
@@ -353,34 +385,36 @@ class Actions(private val context: Context, private val settings: SettingsStore)
     }
 
     private fun tellTime(req: Request.TellTime): ActionResult {
-        if (req.date) return ActionResult(Clock.speakDate())
+        if (req.date) return ActionResult(Clock.speakDate(), readout = info.date())
         val place = req.place
         if (place != null) {
             val zone = Clock.zoneFor(place) ?: return ActionResult("I don't know the time zone for $place.")
-            return ActionResult(Clock.speakTime(java.time.ZonedDateTime.now(zone), place))
+            return ActionResult(Clock.speakTime(java.time.ZonedDateTime.now(zone), place), readout = info.time(zone, place))
         }
-        return ActionResult(Clock.speakTime())
+        return ActionResult(Clock.speakTime(), readout = info.time(ZoneId.systemDefault(), null))
     }
 
     private fun device(req: Request.Device): ActionResult = when (req.op) {
-        DeviceOp.FLASH_ON -> ActionResult(DeviceControls.flashlight(context, true))
-        DeviceOp.FLASH_OFF -> ActionResult(DeviceControls.flashlight(context, false))
-        DeviceOp.FLASH_TOGGLE -> ActionResult(DeviceControls.flashlight(context, null))
+        DeviceOp.FLASH_ON -> DeviceControls.flashlight(context, true).let { ActionResult(it, readout = info.flashlight()) }
+        DeviceOp.FLASH_OFF -> DeviceControls.flashlight(context, false).let { ActionResult(it, readout = info.flashlight()) }
+        DeviceOp.FLASH_TOGGLE -> DeviceControls.flashlight(context, null).let { ActionResult(it, readout = info.flashlight()) }
         DeviceOp.VOLUME_UP, DeviceOp.VOLUME_DOWN, DeviceOp.VOLUME_SET, DeviceOp.VOLUME_MAX, DeviceOp.MUTE, DeviceOp.UNMUTE ->
-            ActionResult(DeviceControls.volume(context, req.op, req.percent))
+            DeviceControls.volume(context, req.op, req.percent).let { ActionResult(it, readout = info.volume()) }
         DeviceOp.RING_NORMAL, DeviceOp.RING_VIBRATE, DeviceOp.RING_SILENT, DeviceOp.DND_ON, DeviceOp.DND_OFF -> {
             val (line, settings) = DeviceControls.ringer(context, req.op)
-            if (settings != null) ActionResult(line) { launch(settings) } else ActionResult(line)
+            val r = info.ringer()
+            if (settings != null) ActionResult(line, readout = Readout(r.text, controls = r.controls + Control.Button("Grant access") { launch(settings) })) { launch(settings) }
+            else ActionResult(line, readout = r)
         }
-        DeviceOp.BATTERY -> ActionResult(DeviceControls.battery(context))
+        DeviceOp.BATTERY -> ActionResult(DeviceControls.battery(context), readout = info.battery())
         DeviceOp.BT_BATTERY -> btBattery(req.target)
         DeviceOp.BRIGHT_UP, DeviceOp.BRIGHT_DOWN, DeviceOp.BRIGHT_SET -> {
             val (line, settings) = DeviceControls.brightness(context, req.op, req.percent)
-            if (settings != null) ActionResult(line) { launch(settings) } else ActionResult(line)
+            if (settings != null) ActionResult(line, readout = info.brightness()) { launch(settings) } else ActionResult(line, readout = info.brightness())
         }
         DeviceOp.WIFI, DeviceOp.BLUETOOTH -> {
             val (line, panel) = DeviceControls.connectionPanel(req.op)
-            ActionResult(line) { launch(panel) }
+            ActionResult(line, readout = info.connection(req.op == DeviceOp.WIFI, panel)) { launch(panel) }
         }
     }
 
@@ -421,13 +455,15 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             }
         }
         val items = NotificationReader.current(context).let { all -> if (req.email) all.filter { it.email } else all }
-        return ActionResult(NotificationReader.speak(items, req.email, req.from))
+        val shown = req.from?.let { f -> items.filter { it.title.contains(f, true) || it.app.contains(f, true) } }?.ifEmpty { null } ?: items
+        return ActionResult(NotificationReader.speak(items, req.email, req.from), readout = info.notifications(shown, req.email))
     }
 
     private fun readCalendar(req: Request.ReadCalendar): ActionResult {
         if (isLocked()) return lockedNotice()
         if (!CalendarReader.canRead(context)) return ActionResult("I need permission to read your calendar. You can grant it in Settings.")
-        return ActionResult(CalendarReader.speak(CalendarReader.events(context, req.range), req.range))
+        val events = CalendarReader.events(context, req.range)
+        return ActionResult(CalendarReader.speak(events, req.range), readout = info.agenda(events, req.range))
     }
 
     // ---------------------------------------------------------------- YouTube
@@ -477,7 +513,7 @@ class Actions(private val context: Context, private val settings: SettingsStore)
                 .putExtra(AlarmClock.EXTRA_MESSAGE, "Brick timer"),
         )
         if (ok) com.brick.assistant.timers.ClockTimers.started(context, sec)
-        return if (ok) ActionResult("Setting timer for ${TimeParser.formatDuration(sec)}.")
+        return if (ok) ActionResult("Setting timer for ${TimeParser.formatDuration(sec)}.", readout = info.timer(sec))
         else ActionResult("I could not find a clock app to set the timer.")
     }
 
@@ -526,7 +562,8 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         val known = ct.known(context)
         if (known.isNotEmpty()) {
             return ActionResult(
-                known.joinToString(" ") { x ->
+                readout = info.timers(known.map { it.durationMs to it.left() }, known.map { it.paused }),
+                robotLine = known.joinToString(" ") { x ->
                     val left = TimeParser.formatDuration((x.left() + 999) / 1000)
                     (if (known.size > 1) "Your ${TimeParser.formatDuration(x.durationMs / 1000)} timer has " else "You have ") +
                         left + " left" + (if (x.paused) ", paused." else ".")
@@ -589,7 +626,46 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         } else {
             ""
         }
-        return ActionResult("Setting alarm for $time$whenText$label.$note")
+        return ActionResult(
+            "Setting alarm for $time$whenText$label.$note",
+            readout = info.alarm(at, req.days.takeIf { it.isNotEmpty() }?.let { describeDays(it) }, req.label),
+        )
+    }
+
+    // ---------------------------------------------------------------- stopwatch
+
+    private fun stopwatch(req: Request.Stopwatch): ActionResult {
+        val c = context
+        val s = when (req.op) {
+            StopwatchOp.START -> Stopwatch.start(c)
+            StopwatchOp.STOP -> Stopwatch.stop(c)
+            StopwatchOp.RESET -> Stopwatch.reset(c)
+            StopwatchOp.LAP -> Stopwatch.lap(c)
+            StopwatchOp.STATUS -> Stopwatch.state(c)
+        }
+        val t = TimeParser.formatDuration(s.elapsed() / 1000)
+        val line = when (req.op) {
+            StopwatchOp.START -> if (s.banked > 0) "Stopwatch resumed at $t." else "Stopwatch started."
+            StopwatchOp.STOP -> if (s.elapsed() > 0) "Stopwatch stopped at $t." else "The stopwatch isn't running."
+            StopwatchOp.RESET -> "Stopwatch reset."
+            StopwatchOp.LAP -> if (s.running) "Lap ${s.laps.size}: $t." else "The stopwatch isn't running."
+            StopwatchOp.STATUS -> when {
+                s.running -> "The stopwatch is at $t."
+                s.elapsed() > 0 -> "The stopwatch is stopped at $t."
+                else -> "The stopwatch isn't running."
+            }
+        }
+        return ActionResult(line, readout = stopwatchReadout())
+    }
+
+    private fun stopwatchReadout(): Readout {
+        val s = Stopwatch.state(context)
+        val controls = listOf(
+            Control.Button(if (s.running) "|| stop" else "> start") { if (Stopwatch.state(context).running) Stopwatch.stop(context) else Stopwatch.start(context) },
+            Control.Button("lap") { Stopwatch.lap(context) },
+            Control.Button("reset") { Stopwatch.reset(context) },
+        )
+        return info.stopwatch(s.running, s.elapsed(), s.firstStart, s.laps, controls).let { Readout(it.text, controls = it.controls, refresh = ::stopwatchReadout, live = s.running) }
     }
 
     private fun describeDays(days: List<Int>): String {
@@ -609,13 +685,22 @@ class Actions(private val context: Context, private val settings: SettingsStore)
     // ---------------------------------------------------------------- maps
 
     private fun navigate(req: Request.Navigate): ActionResult {
-        val dest = req.destination
+        // A saved place ("home", "work"): go to its address, and say its name rather than the address.
+        val saved = com.brick.assistant.data.Places.find(req.destination)
+        val dest = saved?.address ?: req.destination
+        val home = saved != null && com.brick.assistant.data.Places.key(saved.name) == "home"
+        val to = when {
+            home -> "home"
+            saved != null -> "to ${saved.name}"
+            else -> "to $dest"
+        }
+        val shown = if (home) "home" else saved?.name ?: dest
         if (inCar) {
             // In the car, ask first, then hand the place to the car's navigation app.
             val uri = "geo:0,0?q=${Uri.encode(dest)}"
             return ActionResult(
-                "Start directions to $dest? Say yes to go.",
-                confirm = Confirmation("Okay, I won't start directions.") { ActionResult("Starting directions to $dest.", navigateTo = uri) },
+                "Start directions $to? Say yes to go.",
+                confirm = Confirmation("Okay, I won't start directions.") { ActionResult("Starting directions $to.", navigateTo = uri) },
             )
         }
         val geo = Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=${Uri.encode(dest)}"))
@@ -626,7 +711,7 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             null
         }
         // Directions never start on their own: Google Maps opens its route preview and you press Start.
-        val line = if (req.directions) "Here's the route to $dest. Press Start when you're ready." else "Showing $dest on the map."
+        val line = if (req.directions) "Here's the route $to. Press Start when you're ready." else "Showing $shown on the map."
         return ActionResult(line) {
             val ok = when {
                 req.directions && (defaultMaps == "com.google.android.apps.maps" || defaultMaps == null || defaultMaps == "android") ->
@@ -665,6 +750,167 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         val line = PlaceHours.speak(p, req.ask, req.tomorrow)
         // No posted hours: the Google Maps place page has them.
         return if (p.hours == null) ActionResult(line) { openMapsSearch(req.place) } else ActionResult(line)
+    }
+
+    /**
+     * Night-sky darkness: the Bortle class here (or at a place), or the darkest sky within a radius / worldwide.
+     * The details come from lightpollutionmap.app, opened at the right spot and zoom: the site asks apps to
+     * link to it rather than pull its numbers, so Brick speaks a number only when it has its own sky data.
+     */
+    private suspend fun sky(req: Request.Sky): ActionResult {
+        val center: WeatherService.Place = when {
+            // Worldwide: the best skies are tied at pristine, so the nearest of them to you wins.
+            req.worldwide -> WeatherService.deviceLocation(context) ?: WeatherService.Place(20.0, 0.0, null)
+            req.place != null -> findPlace(req.place)
+                ?: return ActionResult("I couldn't find ${req.place} on the map.")
+            else -> WeatherService.deviceLocation(context)
+                ?: return ActionResult("I need your location for that. Allow location access for Brick and try again.")
+        }
+        val where = req.place?.let { p -> center.name ?: p } ?: "your location"
+        // "... hide cords", or always with the setting on: no latitude and longitude on the readout.
+        val hide = req.hideCoords || settings.current.hideSkyCoords
+        val zoom = when {
+            req.worldwide -> 2
+            req.darkest -> SkyMap.zoomForRadius(req.radiusMiles ?: IntentParser.DEFAULT_SKY_RADIUS)
+            else -> 10
+        }
+        val url = SkyMap.link(center.lat, center.lon, zoom)
+        val open = fun() { launch(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+
+        // "... obscure my location", or always with the setting on: the numbers are for where you are, the readout
+        // names a decoy place some distance away. A place you named isn't your location, so it stays as it is.
+        val s = settings.current
+        val obscure = (req.obscure || s.obscureSkyLocation) && req.place == null
+
+        if (!req.darkest) {
+            // Brick's own sky data, when it has some for this spot.
+            SkyData.sqmAt(context, center.lat, center.lon)?.let { sqm ->
+                if (obscure) {
+                    val d = decoy(center.lat, center.lon, decoyMiles(req.obscureMiles, s.obscureSkyLocation))
+                    val (dLat, dLon) = d.lat to d.lon
+                    val name = d.name ?: "somewhere far away"
+                    return ActionResult(
+                        SkyQuality.answer(req.aspect, sqm, name),
+                        display = SkyQuality.panel(req.aspect, sqm, name, note = if (hide) null else coords(dLat, dLon)),
+                    )
+                }
+                return ActionResult(
+                    SkyQuality.answer(req.aspect, sqm, req.place?.let { where }),
+                    display = SkyQuality.panel(req.aspect, sqm, where, note = if (hide) null else coords(center.lat, center.lon)),
+                    // Answered from Brick's own data: the map opens only when you asked for it.
+                    after = open.takeIf { req.map },
+                )
+            }
+            if (SkyData.hasGrid(context) && !SkyData.covers(context, center.lat)) {
+                return ActionResult("I don't have sky data that far ${if (center.lat < 0) "south" else "north"}. My map covers 85 north to 60 south.")
+            }
+            if (SkyData.hasGrid(context)) return ActionResult("$where is out at sea, and I only have sky data over land.")
+            return ActionResult("Opening the light pollution map at $where.", after = open)
+        }
+        SkyData.darkest(context, center.lat, center.lon, if (req.worldwide) null else req.radiusMiles)?.let { spot ->
+            val name = nearbyName(spot.lat, spot.lon)
+            if (obscure) {
+                // The spot is the answer, but its distance from you would give you away: leave that and "of you" out.
+                val label = name ?: if (req.worldwide) "anywhere on earth" else "a dark spot"
+                return ActionResult(
+                    (if (req.worldwide) "Nearest pristine sky" else "Darkest nearby") + (name?.let { ": near $it. " } ?: ". ") +
+                        SkyQuality.answer(req.aspect, spot.sqm),
+                    display = SkyQuality.panel(req.aspect, spot.sqm, label, title = "DARKEST SKY", note = if (hide) null else coords(spot.lat, spot.lon)),
+                    after = if (req.map) fun() { launch(Intent(Intent.ACTION_VIEW, Uri.parse(SkyMap.link(spot.lat, spot.lon, 9)))) } else null,
+                )
+            }
+            // "Darkest within 100 miles: 73 miles away, near Phoenicia. Bortle 3.1, rural."
+            val around = if (req.place != null) " of $where" else ""
+            val intro = (if (req.worldwide) "Nearest pristine sky: " else "Darkest within ${req.radiusMiles ?: IntentParser.DEFAULT_SKY_RADIUS} miles$around: ") +
+                (if (spot.miles < 1) "right here" else "%,d miles away".format(java.util.Locale.US, spot.miles)) +
+                (name?.let { ", near $it" } ?: "") + ". "
+            return ActionResult(
+                intro + SkyQuality.answer(req.aspect, spot.sqm),
+                display = SkyQuality.panel(
+                    req.aspect, spot.sqm, name ?: if (req.worldwide) "anywhere on earth" else "within ${req.radiusMiles ?: IntentParser.DEFAULT_SKY_RADIUS} mi of you",
+                    title = "DARKEST SKY",
+                    note = "%,d mi away".format(java.util.Locale.US, spot.miles) + if (hide) "" else "  " + coords(spot.lat, spot.lon),
+                ),
+                after = if (req.map) fun() { launch(Intent(Intent.ACTION_VIEW, Uri.parse(SkyMap.link(spot.lat, spot.lon, 9)))) } else null,
+            )
+        }
+        val line = if (req.worldwide) {
+            "Opening the world light pollution map."
+        } else {
+            val r = req.radiusMiles ?: IntentParser.DEFAULT_SKY_RADIUS
+            "Opening the light pollution map within $r miles."
+        }
+        return ActionResult(line, after = open)
+    }
+
+    /**
+     * Any place in the world by name: towns, countries, parks, deserts, mountains ("Atacama Desert", "Mauna Kea").
+     * Android's geocoder knows landmarks; Open-Meteo's (towns only) is the fallback, then just the first word or
+     * two of the name ("paris france" -> "paris").
+     */
+    private suspend fun findPlace(name: String): WeatherService.Place? {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                @Suppress("DEPRECATION")
+                android.location.Geocoder(context, java.util.Locale.US).getFromLocationName(name, 1)?.firstOrNull()
+            } catch (e: Exception) {
+                null
+            }
+        }?.let { a ->
+            val main = a.featureName?.takeUnless { it.any(Char::isDigit) || it.equals(a.countryName, true) }
+                ?: a.locality ?: a.adminArea
+            val region = a.countryName?.takeUnless { it.equals(main, true) }
+            val label = listOfNotNull(main, region).joinToString(", ").ifEmpty { null }
+            return WeatherService.Place(a.latitude, a.longitude, label)
+        }
+        WeatherService.geocode(name)?.let { return it }
+        val words = name.split(' ')
+        for (n in minOf(2, words.size - 1) downTo 1) WeatherService.geocode(words.take(n).joinToString(" "))?.let { return it }
+        return null
+    }
+
+    /**
+     * A decoy point [miles] from you in a random direction, on land when Brick's sky grid can tell (so it names a
+     * real-looking place rather than open ocean); after a dozen tries over water it takes the last one.
+     */
+    /** The distance you asked for, else random up to 3,000 miles from the settings minimum (toggle on) or 100. */
+    private fun decoyMiles(asked: Int?, toggleOn: Boolean): Int {
+        val lo = if (toggleOn) settings.current.obscureMinMiles.coerceIn(IntentParser.OBSCURE_MIN_MILES, IntentParser.OBSCURE_MAX_MILES) else IntentParser.OBSCURE_MIN_MILES
+        return asked ?: (lo..IntentParser.OBSCURE_MAX_MILES).random()
+    }
+
+    private class Decoy(val lat: Double, val lon: Double, val name: String?)
+
+    /** A decoy point [miles] away that has a name, trying a few directions (each one a geocoder lookup). */
+    private suspend fun decoy(lat: Double, lon: Double, miles: Int): Decoy {
+        var last: Pair<Double, Double>? = null
+        for (tries in 0 until 30) {
+            val p = SkyMap.offset(lat, lon, miles.toDouble(), Math.random() * 360)
+            last = p
+            // Skip polar and open-ocean points cheaply (Brick's sky grid knows land) before asking the geocoder.
+            if (kotlin.math.abs(p.first) > 65 || (SkyData.hasGrid(context) && SkyData.sqmAt(context, p.first, p.second) == null)) continue
+            nearbyName(p.first, p.second)?.let { return Decoy(p.first, p.second, it) }
+            if (tries > 20) break
+        }
+        return Decoy(last!!.first, last.second, null)
+    }
+
+    /** "38.57N 109.55W" (ASCII, for the sky panel). */
+    private fun coords(lat: Double, lon: Double) = String.format(
+        java.util.Locale.US, "%.2f%s %.2f%s", kotlin.math.abs(lat), if (lat >= 0) "N" else "S", kotlin.math.abs(lon), if (lon >= 0) "E" else "W",
+    )
+
+    /** The town or area nearest a point ("Moab, Utah"), from Android's geocoder; null offline or out in the wild. */
+    private suspend fun nearbyName(lat: Double, lon: Double): String? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        try {
+            @Suppress("DEPRECATION")
+            val a = android.location.Geocoder(context, java.util.Locale.getDefault()).getFromLocation(lat, lon, 1)?.firstOrNull()
+                ?: return@withContext null
+            val local = a.locality ?: a.subAdminArea ?: a.featureName?.takeUnless { it.any(Char::isDigit) }
+            listOfNotNull(local, a.adminArea ?: a.countryName).distinct().joinToString(", ").ifEmpty { null }
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private suspend fun photoSpots(req: Request.PhotoSpots): ActionResult {
@@ -720,7 +966,7 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             pt.dateTime == null -> "in 1 hour"
             else -> TimeParser.describe(at)
         }
-        return ActionResult("Reminder set: ${req.task}, $whenText.")
+        return ActionResult("Reminder set: ${req.task}, $whenText.", readout = info.reminder(req.task, at))
     }
 
     // ---------------------------------------------------------------- calendar
@@ -744,9 +990,9 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         }
         val line = "Creating calendar event: ${req.title}, $whenText."
 
-        if (CalendarHelper.insert(context, req.title, startMs, endMs, allDay)) return ActionResult(line)
+        if (CalendarHelper.insert(context, req.title, startMs, endMs, allDay)) return ActionResult(line, readout = info.newEvent(req.title, start, allDay, saved = true))
 
-        return ActionResult(line) {
+        return ActionResult(line, readout = info.newEvent(req.title, start, allDay, saved = false)) {
             val ok = launch(
                 Intent(Intent.ACTION_INSERT)
                     .setData(CalendarContract.Events.CONTENT_URI)
@@ -799,7 +1045,18 @@ class Actions(private val context: Context, private val settings: SettingsStore)
     /** Always confirm first: nothing is sent until the user says yes. */
     private fun confirmText(found: Contact, msg: String): ActionResult = ActionResult(
         "Send this text to ${found.name}: $msg? Say yes to send it, or no to cancel.",
-        confirm = Confirmation(noLine = "Okay, I won't send it.") { sendConfirmedText(found, msg) },
+        readout = info.text(found, msg, "say yes to send"),
+        confirm = Confirmation(noLine = "Okay, I won't send it.") {
+            sendConfirmedText(found, msg).let { r ->
+                val status = when {
+                    r.robotLine.startsWith("Text sent") -> "sent"
+                    r.robotLine.startsWith("Unlock") -> "sends after unlock"
+                    r.robotLine.contains("Messages") -> "opened in Messages"
+                    else -> "not sent"
+                }
+                ActionResult(r.robotLine, readout = info.text(found, msg, status), after = r.after)
+            }
+        },
     )
 
     /**
@@ -846,7 +1103,7 @@ class Actions(private val context: Context, private val settings: SettingsStore)
 
     private fun call(req: Request.Call): ActionResult {
         val contact = ContactsLookup.find(context, req.who) ?: return notFound(req.who)
-        return ActionResult("Calling ${contact.name}.") {
+        return ActionResult("Calling ${contact.name}.", readout = info.call(contact)) {
             val uri = Uri.parse("tel:${Uri.encode(contact.number)}")
             val direct = context.hasPermission(Manifest.permission.CALL_PHONE)
             if (!(direct && launch(Intent(Intent.ACTION_CALL, uri)))) launch(Intent(Intent.ACTION_DIAL, uri))
@@ -870,18 +1127,19 @@ class Actions(private val context: Context, private val settings: SettingsStore)
                 }
             }
         }
-        if (!req.explicit) {
-            // Not asked to search: answer a question directly if possible, never open a web search.
-            if (!question) return ActionResult("I can't do that yet.")
-            return ActionResult(SearchService.quickAnswer(req.query) ?: "I can't answer that.")
-        }
-        val answer = SearchService.quickAnswer(req.query)
         val openBrowser = {
             launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=${Uri.encode(req.query)}")))
             Unit
         }
+        if (!req.explicit) {
+            // Not asked to search: answer a question directly if possible, never open a web search.
+            if (!question) return ActionResult("I can't do that yet.")
+            val a = SearchService.answer(req.query) ?: return ActionResult("I can't answer that.")
+            return ActionResult(a.text, readout = info.search(req.query, a, openBrowser))
+        }
+        val answer = SearchService.answer(req.query)
         return if (answer != null) {
-            ActionResult("Searching for ${req.query}. $answer")
+            ActionResult("Searching for ${req.query}. ${answer.text}", readout = info.search(req.query, answer, openBrowser))
         } else {
             ActionResult("Searching for ${req.query}. Opening the results in your browser.", after = openBrowser)
         }
@@ -891,8 +1149,8 @@ class Actions(private val context: Context, private val settings: SettingsStore)
 
     private fun math(req: Request.Math): ActionResult {
         val r = req.result
-        if (r.value.isNaN() || r.value.isInfinite()) return ActionResult("${r.spoken} is undefined.")
-        return ActionResult("${r.spoken} equals ${r.formatted}.")
+        if (r.value.isNaN() || r.value.isInfinite()) return ActionResult("${r.spoken} is undefined.", readout = info.math(r))
+        return ActionResult("${r.spoken} equals ${r.formatted}.", readout = info.math(r))
     }
 
     // ---------------------------------------------------------------- weather
@@ -906,9 +1164,39 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             WeatherService.deviceLocation(context)
                 ?: return ActionResult("I need your location for the weather. Grant location access, or set a home city in Settings.")
         }
-        val data = WeatherSource.fetch(place, s.useFahrenheit, req.tomorrow, s.accuWeatherKey)
+        if (req.span != WeatherSpan.DAY) return weatherWeek(req, place)
+        val data = WeatherSource.fetch(place, s.useFahrenheit, req.tomorrow, s.weatherConfig())
             ?: return ActionResult("The weather service is not responding right now.")
-        return ActionResult(WeatherSource.speak(data, req.aspect))
+        // Your own location (device or home city, not one you asked about): "hide my location" leaves the place
+        // name out, "obscure my location" names a decoy some distance away. The forecast is always yours.
+        if (req.city == null) {
+            if (req.obscure || s.obscureWeatherLocation) {
+                val d = decoy(place.lat, place.lon, decoyMiles(req.obscureMiles, s.obscureWeatherLocation))
+                val shown = data.copy(place = d.name ?: "a place far away")
+                return ActionResult(WeatherSource.speak(shown, req.aspect), readout = info.weather(shown, shown.place!!))
+            }
+            if (req.hidePlace || s.hideWeatherPlace) {
+                val shown = data.copy(place = null)
+                return ActionResult(WeatherSource.speak(shown, req.aspect), readout = info.weather(shown, "location hidden"))
+            }
+        }
+        return ActionResult(WeatherSource.speak(data, req.aspect), readout = info.weather(data, data.place ?: place.name ?: "your location"))
+    }
+
+    /** "This week's weather" / "will it rain this weekend": day by day, with the same hide / obscure rules. */
+    private suspend fun weatherWeek(req: Request.Weather, place: WeatherService.Place): ActionResult {
+        val s = settings.current
+        val week = WeatherSource.fetchWeek(place, s.useFahrenheit, s.weatherConfig())
+            ?: return ActionResult("The weather service is not responding right now.")
+        val shown = when {
+            req.city != null -> week
+            req.obscure || s.obscureWeatherLocation ->
+                week.copy(place = decoy(place.lat, place.lon, decoyMiles(req.obscureMiles, s.obscureWeatherLocation)).name ?: "a place far away")
+            req.hidePlace || s.hideWeatherPlace -> week.copy(place = null)
+            else -> week
+        }
+        val where = shown.place ?: if (req.hidePlace || s.hideWeatherPlace) "location hidden" else place.name ?: "your location"
+        return ActionResult(WeatherSource.speakWeek(shown, req.span, req.aspect), readout = info.weatherWeek(shown, req.span, where))
     }
 
     // ---------------------------------------------------------------- music
@@ -1007,6 +1295,16 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             }
             is Request.PlaceHours -> "maps.hours"
             is Request.PhotoSpots -> "maps.photos"
+            is Request.Sky -> when {
+                req.worldwide -> "sky.darkest.world"
+                req.darkest -> "sky.darkest"
+                else -> when (req.aspect) {
+                    SkyAspect.BORTLE -> "sky.bortle"
+                    SkyAspect.STARS -> "sky.stars"
+                    SkyAspect.MILKY_WAY -> "sky.milkyway"
+                    SkyAspect.REPORT -> "sky.report"
+                }
+            }
             is Request.FindPlace -> when (req.kind) {
                 FindKind.FOOD -> "maps.food"
                 FindKind.SHOPPING -> "maps.shopping"
@@ -1132,6 +1430,48 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         if (reply == null) return ActionResult("I could not reach the Driver music player.")
         brand = com.brick.assistant.overlay.Brand.DRIVER
         return driverResult(command, reply, opening)
+    }
+
+    /**
+     * Music requests (any app: Driver, Spotify, Apple Music, YouTube Music...) get the music readout: what you
+     * asked for, the app, and what's playing, with transport buttons and the media volume.
+     */
+    private fun withMusicReadout(req: Request, r: ActionResult): ActionResult {
+        if (r.readout != null || r.display != null) return r
+        val action: String = when (req) {
+            is Request.Music -> when (req.command) {
+                MusicCommand.PLAY_QUERY -> Box.kv("PLAY", describePlay(req))
+                MusicCommand.PLAY_ANY -> Box.kv("PLAY", "music")
+                MusicCommand.PAUSE -> Box.kv("PAUSE", "")
+                MusicCommand.RESUME -> Box.kv("RESUME", "")
+                MusicCommand.NEXT -> Box.kv("SKIP", "next track")
+                MusicCommand.PREVIOUS -> Box.kv("BACK", "previous track")
+            }
+            is Request.Effect -> Box.kv("EFFECT", req.all.joinToString(", ") { it.spoken.removePrefix("the ") } + " " + req.state.name.lowercase())
+            is Request.EffectPreset -> Box.kv("PRESET", req.preset)
+            is Request.Lyrics -> Box.kv("LYRICS", req.song ?: "this song")
+            Request.NowPlaying -> Box.kv("NOW", "playing")
+            Request.LikeSong -> Box.kv("LIKE", "this song")
+            is Request.AddToPlaylist -> Box.kv("ADD TO", req.playlist)
+            is Request.YouTube -> if (req.music) Box.kv("PLAY", req.query) else return r
+            else -> return r
+        }
+        val app = when (brand) {
+            com.brick.assistant.overlay.Brand.DRIVER -> "Driver"
+            com.brick.assistant.overlay.Brand.SPOTIFY -> "Spotify"
+            com.brick.assistant.overlay.Brand.YOUTUBE -> if (req is Request.YouTube && req.music) "YouTube Music" else "YouTube"
+            else -> if (req is Request.Music && req.command == MusicCommand.PLAY_QUERY && settings.current.musicPackage.isNotBlank()) appLabel(settings.current.musicPackage) else null
+        }
+        return ActionResult(
+            r.robotLine, r.confirm, r.returnToCard, r.navigateTo, r.dictate, r.voice,
+            readout = info.music(action, app), after = r.after,
+        )
+    }
+
+    private fun appLabel(pkg: String): String = try {
+        context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(pkg, 0)).toString()
+    } catch (_: Exception) {
+        pkg
     }
 
     private fun describePlay(req: Request.Music): String {

@@ -23,9 +23,17 @@ class BrickApp : Application() {
     override fun onCreate() {
         super.onCreate()
         BeepMuter.restore(this) // in case the app was killed while listening
+        com.brick.assistant.voice.OfflineSpeech.refresh(this) // so the first request already uses on-device speech
         com.brick.assistant.data.Palettes.init(this)
+        com.brick.assistant.data.Places.init(this)
+        com.brick.assistant.overlay.PanelCard.fitWidth(this) // readouts as wide as the card
         container = AppContainer(this)
         ReminderScheduler.createChannel(this)
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        com.brick.assistant.overlay.PanelCard.fitWidth(this) // rotated, or the display size changed
     }
 }
 
@@ -39,6 +47,11 @@ class AppContainer(val context: Context) {
     val actions = Actions(context, settings)
     val assistant = Assistant(responses, voice, actions).apply {
         onBrand = { b -> if (settings.current.brandGlow && !actions.inCar) com.brick.assistant.overlay.BrandOverlay.play(context, b) }
+        // Quiet outdoors: bright light (and no headphones) means text only. Never in the car.
+        textOnly = {
+            val s = settings.current
+            !actions.inCar && com.brick.assistant.voice.Outdoors.quiet(context, s.quietOutdoors, s.outdoorLux)
+        }
     }
     /** Conversation history shared by the app screen and the floating overlay. */
     val log = mutableStateListOf<LogEntry>()

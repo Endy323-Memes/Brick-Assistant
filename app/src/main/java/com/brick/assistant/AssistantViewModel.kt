@@ -35,6 +35,8 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
         private set
     /** Set when launched as the device's assist app; the UI starts listening once permitted. */
     var autoListenRequested by mutableStateOf(false)
+    /** A tab to switch to (from a readout's settings button), or null. */
+    var requestedTab by mutableStateOf<Int?>(null)
 
     private var job: Job? = null
     private val listener = VoiceListener(app)

@@ -13,6 +13,25 @@ import kotlin.math.roundToInt
 /** Which part of the weather the user asked about. */
 enum class WeatherAspect { GENERAL, TEMPERATURE, HUMIDITY, UV, WIND, RAIN_CHANCE, RAIN_AMOUNT, SNOW_CHANCE, SNOW_AMOUNT }
 
+/** One day, or the week ahead ([WEEK], 7 days from today), or the coming Saturday and Sunday ([WEEKEND]). */
+enum class WeatherSpan { DAY, WEEK, WEEKEND }
+
+/** One day of a [WeekForecast]. */
+data class DayForecast(
+    val date: java.time.LocalDate,
+    val high: Int?,
+    val low: Int?,
+    val conditions: String,
+    val rainChance: Int?,
+    val snowChance: Int?,
+    val source: String,
+)
+
+/** Day-by-day forecast, today first. AccuWeather's free key covers 5 days; Open-Meteo fills in the rest. */
+data class WeekForecast(val place: String?, val imperial: Boolean, val days: List<DayForecast>) {
+    val source: String get() = days.map { it.source }.distinct().joinToString(" + ")
+}
+
 /** One day's weather, from AccuWeather or Open-Meteo. Numbers are already in the user's units. */
 data class WeatherData(
     val place: String?,
@@ -40,15 +59,69 @@ object WeatherSource {
     private const val TAG = "BrickWeather"
     private val locationKeys = HashMap<String, Pair<String, String?>>()
 
-    /** AccuWeather when a key is set (falls back to Open-Meteo if AccuWeather fails), else Open-Meteo. */
-    suspend fun fetch(place: WeatherService.Place, imperial: Boolean, tomorrow: Boolean, accuKey: String): WeatherData? =
+    /**
+     * One day's weather from the source picked in Settings: "auto" is AccuWeather when its key is set, else
+     * Open-Meteo. Any source that fails (or has no key) falls back to Open-Meteo.
+     */
+    suspend fun fetch(place: WeatherService.Place, imperial: Boolean, tomorrow: Boolean, config: WeatherConfig): WeatherData? =
         withContext(Dispatchers.IO) {
-            if (accuKey.isNotBlank()) {
-                accuWeather(place, imperial, tomorrow, accuKey.trim())?.let { return@withContext it }
-                Log.w(TAG, "AccuWeather failed; using Open-Meteo")
+            val accuKey = config.key(WeatherConfig.ACCUWEATHER)
+            when (val src = config.source) {
+                WeatherConfig.OPEN_METEO -> {}
+                WeatherConfig.AUTO, WeatherConfig.ACCUWEATHER -> if (accuKey.isNotBlank()) {
+                    accuWeather(place, imperial, tomorrow, accuKey)?.let { return@withContext it }
+                    Log.w(TAG, "AccuWeather failed; using Open-Meteo")
+                }
+                else -> WeatherProvider.of(src)?.let { p ->
+                    val key = config.key(p.id)
+                    if (!p.needsKey || key.isNotBlank()) {
+                        p.fetch(place, imperial, key)?.let { f -> toWeatherData(f, p.label, place, imperial, tomorrow) }?.let { return@withContext it }
+                    }
+                    Log.w(TAG, "${p.label} failed or has no key; using Open-Meteo")
+                }
             }
             openMeteo(place, imperial, tomorrow)
         }
+
+    /** Checks a source's key against a test city: null when it works, else what went wrong. */
+    suspend fun testKey(sourceId: String, key: String): String? = withContext(Dispatchers.IO) {
+        if (sourceId == WeatherConfig.ACCUWEATHER) return@withContext testAccuWeatherKey(key)
+        val p = WeatherProvider.of(sourceId) ?: return@withContext "Unknown weather source."
+        val f = p.fetch(WeatherProvider.TEST_PLACE, true, key.trim())
+        when {
+            f == null -> "${p.label} rejected the key or is unreachable."
+            f.days.isEmpty() -> "${p.label} answered but returned no forecast."
+            else -> null
+        }
+    }
+
+    private fun windWords(v: String?): String? = v?.let { s -> s.toDoubleOrNull()?.let { compassWords(degreesToCompass(it)) } ?: compassWords(s) }
+
+    private fun toWeatherData(f: ProviderForecast, label: String, place: WeatherService.Place, imperial: Boolean, tomorrow: Boolean): WeatherData? {
+        val today = java.time.LocalDate.now()
+        val d = f.days.firstOrNull { it.date == today.plusDays(if (tomorrow) 1 else 0) } ?: f.days.getOrNull(if (tomorrow) 1 else 0) ?: return null
+        val c = if (tomorrow) null else f.current
+        return WeatherData(
+            place = place.name ?: f.place,
+            tomorrow = tomorrow,
+            imperial = imperial,
+            temp = c?.temp,
+            high = d.high,
+            low = d.low,
+            conditions = (c?.conditions ?: d.conditions).ifBlank { "mixed conditions" },
+            conditionsAreNouns = false,
+            humidity = c?.humidity ?: d.humidity,
+            uvIndex = c?.uv ?: d.uv,
+            windSpeed = c?.wind ?: d.wind,
+            windGust = c?.gust ?: d.gust,
+            windFrom = windWords(c?.windFrom ?: d.windFrom),
+            rainChance = d.rainChance,
+            rainAmount = d.rainAmount,
+            snowChance = d.snowChance,
+            snowAmount = d.snowAmount,
+            source = label,
+        )
+    }
 
     // ---------------------------------------------------------------- AccuWeather
 
@@ -121,7 +194,7 @@ object WeatherSource {
             temp = temp,
             high = temps?.optJSONObject("Maximum")?.optDouble("Value")?.roundToInt(),
             low = temps?.optJSONObject("Minimum")?.optDouble("Value")?.roundToInt(),
-            conditions = conditions.lowercase(Locale.US).ifBlank { "mixed conditions" },
+            conditions = conditions.lowercase(Locale.US).replace("w/", "with").ifBlank { "mixed conditions" },
             conditionsAreNouns = false,
             humidity = humidity,
             uvIndex = uvNow,
@@ -181,6 +254,156 @@ object WeatherSource {
             snowAmount = snow,
             source = "Open-Meteo",
         )
+    }
+
+    // ---------------------------------------------------------------- the week ahead
+
+    /**
+     * Seven days from today. With an AccuWeather key its 5-day forecast (all the free key allows) comes first and
+     * Open-Meteo (no key, 16 days) fills in the days after it; without a key it's all Open-Meteo.
+     */
+    suspend fun fetchWeek(place: WeatherService.Place, imperial: Boolean, config: WeatherConfig, days: Int = 7): WeekForecast? =
+        withContext(Dispatchers.IO) {
+            val accuKey = config.key(WeatherConfig.ACCUWEATHER)
+            val picked = WeatherProvider.of(config.source)
+            var name: String? = null
+            // The chosen source first (AccuWeather in "auto" when it has a key); Open-Meteo fills the rest.
+            val accu = when {
+                picked != null -> config.key(picked.id).takeIf { !picked.needsKey || it.isNotBlank() }
+                    ?.let { picked.fetch(place, imperial, it) }
+                    ?.also { name = it.place }
+                    ?.days?.map { DayForecast(it.date, it.high, it.low, it.conditions, it.rainChance, it.snowChance, picked.label) }
+                config.source == WeatherConfig.OPEN_METEO -> null
+                accuKey.isNotBlank() -> accuWeek(place, imperial, accuKey)
+                else -> null
+            }
+            val meteo = if ((accu?.size ?: 0) < days) openMeteoWeek(place, imperial, days) else null
+            val merged = (accu.orEmpty() + meteo.orEmpty().filter { m -> accu.orEmpty().none { it.date == m.date } })
+                .sortedBy { it.date }
+                .filter { !it.date.isBefore(java.time.LocalDate.now()) }
+                .take(days)
+            if (merged.isEmpty()) null else WeekForecast(place.name ?: name ?: accuName(place), imperial, merged)
+        }
+
+    private fun accuName(place: WeatherService.Place): String? = locationKeys["%.3f,%.3f".format(Locale.US, place.lat, place.lon)]?.second
+
+    private fun accuWeek(place: WeatherService.Place, imperial: Boolean, key: String): List<DayForecast>? {
+        val geo = "%.3f,%.3f".format(Locale.US, place.lat, place.lon)
+        val (loc, _) = locationKeys[geo] ?: run {
+            val o = accuGet("$ACCU/locations/v1/cities/geoposition/search?q=$geo", key)?.let { JSONObject(it) } ?: return null
+            (o.optString("Key") to o.optString("LocalizedName").ifBlank { null }).also { locationKeys[geo] = it }
+        }
+        if (loc.isBlank()) return null
+        val arr = accuGet("$ACCU/forecasts/v1/daily/5day/$loc?details=true&metric=${!imperial}", key)
+            ?.let { JSONObject(it).optJSONArray("DailyForecasts") } ?: return null
+        return (0 until arr.length()).mapNotNull { i ->
+            val d = arr.optJSONObject(i) ?: return@mapNotNull null
+            val date = d.optString("Date").take(10).let { runCatching { java.time.LocalDate.parse(it) }.getOrNull() } ?: return@mapNotNull null
+            val day = d.optJSONObject("Day")
+            val night = d.optJSONObject("Night")
+            fun most(f: String) = listOfNotNull(day, night).maxOfOrNull { it.optInt(f) }
+            val t = d.optJSONObject("Temperature")
+            DayForecast(
+                date = date,
+                high = t?.optJSONObject("Maximum")?.optDouble("Value")?.roundToInt(),
+                low = t?.optJSONObject("Minimum")?.optDouble("Value")?.roundToInt(),
+                conditions = day?.optString("IconPhrase").orEmpty().lowercase(Locale.US).replace("w/", "with").ifBlank { "mixed conditions" },
+                rainChance = most("RainProbability"),
+                snowChance = most("SnowProbability"),
+                source = "AccuWeather",
+            )
+        }
+    }
+
+    private fun openMeteoWeek(place: WeatherService.Place, imperial: Boolean, days: Int): List<DayForecast>? {
+        val o = Http.getJson(
+            "https://api.open-meteo.com/v1/forecast?latitude=${place.lat}&longitude=${place.lon}" +
+                "&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max,snowfall_sum" +
+                "&temperature_unit=${if (imperial) "fahrenheit" else "celsius"}" +
+                "&timezone=auto&forecast_days=${days.coerceIn(1, 16)}",
+        ) ?: return null
+        val d = o.optJSONObject("daily") ?: return null
+        val time = d.optJSONArray("time") ?: return null
+        fun num(name: String, i: Int) = d.optJSONArray(name)?.optDouble(i)?.takeIf { !it.isNaN() }
+        return (0 until time.length()).mapNotNull { i ->
+            val date = runCatching { java.time.LocalDate.parse(time.getString(i)) }.getOrNull() ?: return@mapNotNull null
+            val code = d.optJSONArray("weather_code")?.optInt(i) ?: 0
+            val chance = num("precipitation_probability_max", i)?.roundToInt()
+            val snowy = (num("snowfall_sum", i) ?: 0.0) > 0.0 || code in setOf(71, 73, 75, 77, 85, 86)
+            DayForecast(
+                date = date,
+                high = num("temperature_2m_max", i)?.roundToInt(),
+                low = num("temperature_2m_min", i)?.roundToInt(),
+                conditions = WeatherService.describe(code).removeSuffix(" skies"),
+                rainChance = if (snowy) 0 else chance,
+                snowChance = if (snowy) chance else 0,
+                source = "Open-Meteo",
+            )
+        }
+    }
+
+    /** "Today", "Tomorrow", "Friday". */
+    fun dayName(date: java.time.LocalDate, today: java.time.LocalDate = java.time.LocalDate.now()): String = when (date) {
+        today -> "Today"
+        today.plusDays(1) -> "Tomorrow"
+        else -> date.dayOfWeek.getDisplayName(java.time.format.TextStyle.FULL, Locale.US)
+    }
+
+    /** The days a [WeatherSpan] covers. */
+    fun daysFor(w: WeekForecast, span: WeatherSpan, today: java.time.LocalDate = java.time.LocalDate.now()): List<DayForecast> = when (span) {
+        WeatherSpan.WEEKEND -> {
+            // The coming Saturday and Sunday (today and tomorrow when it's already the weekend).
+            val sat = if (today.dayOfWeek == java.time.DayOfWeek.SUNDAY) today.minusDays(1) else today.with(java.time.temporal.TemporalAdjusters.nextOrSame(java.time.DayOfWeek.SATURDAY))
+            w.days.filter { !it.date.isBefore(today) && !it.date.isBefore(sat) && !it.date.isAfter(sat.plusDays(1)) }
+        }
+        else -> w.days
+    }
+
+    /**
+     * The week (or weekend) out loud. A rain / snow / temperature question gets just that ("Rain is likely Thursday
+     * and Saturday."); anything else gets each day's sky and high.
+     */
+    fun speakWeek(w: WeekForecast, span: WeatherSpan, aspect: WeatherAspect, today: java.time.LocalDate = java.time.LocalDate.now()): String {
+        val days = daysFor(w, span, today)
+        val inPlace = w.place?.let { "In $it, " } ?: ""
+        val period = if (span == WeatherSpan.WEEKEND) "this weekend" else "this week"
+        if (days.isEmpty()) return "I don't have a forecast for $period yet."
+        fun cap(s: String) = if (inPlace.isEmpty()) s.replaceFirstChar { it.uppercase() } else inPlace + s
+        // "today" / "tomorrow" / "Friday" inside a sentence, and "today" / "tomorrow" / "on Friday".
+        fun inline(d: DayForecast) = dayName(d.date, today).let { if (it == "Today" || it == "Tomorrow") it.lowercase() else it }
+        fun on(d: DayForecast) = inline(d).let { if (it == "today" || it == "tomorrow") it else "on $it" }
+        fun night(d: DayForecast) = inline(d).let { if (it == "today") "tonight" else "$it night" }
+        fun list(xs: List<String>) = when (xs.size) { 1 -> xs[0]; 2 -> "${xs[0]} and ${xs[1]}"; else -> xs.dropLast(1).joinToString(", ") + " and " + xs.last() }
+        fun chances(pick: (DayForecast) -> Int?, what: String): String {
+            val likely = days.filter { (pick(it) ?: 0) >= 40 }
+            if (likely.isEmpty()) {
+                val top = days.maxByOrNull { pick(it) ?: 0 }!!
+                val best = pick(top) ?: 0
+                return if (best <= 10) cap("no $what expected $period.") else cap("$what is unlikely $period; the best chance is $best percent ${on(top)}.")
+            }
+            return cap("$what is likely " + list(likely.map { "${inline(it)} (${pick(it)} percent)" }) + ".")
+        }
+        return when (aspect) {
+            WeatherAspect.RAIN_CHANCE, WeatherAspect.RAIN_AMOUNT -> chances({ it.rainChance }, "rain")
+            WeatherAspect.SNOW_CHANCE, WeatherAspect.SNOW_AMOUNT -> chances({ it.snowChance }, "snow")
+            WeatherAspect.TEMPERATURE -> {
+                val withHigh = days.filter { it.high != null }
+                val warm = withHigh.maxByOrNull { it.high!! }
+                val cold = days.filter { it.low != null }.minByOrNull { it.low!! }
+                if (warm == null || cold == null) cap("no temperatures in the forecast $period.")
+                else cap("highs from ${withHigh.minOf { it.high!! }} to ${warm.high} $period, warmest ${on(warm)}. The coldest is ${night(cold)}, at ${cold.low} degrees.")
+            }
+            else -> {
+                val parts = days.map { d ->
+                    val rain = (d.snowChance ?: 0).takeIf { it >= 30 }?.let { ", $it percent chance of snow" }
+                        ?: (d.rainChance ?: 0).takeIf { it >= 30 }?.let { ", $it percent chance of rain" } ?: ""
+                    // Late in the day some sources only have tonight: give its low.
+                    val temp = d.high?.let { "high $it" } ?: d.low?.let { "low $it" } ?: "no temperature yet"
+                    "${dayName(d.date, today).let { if (it == "Today" && d.high == null) "Tonight" else it }}, ${d.conditions}, $temp$rain."
+                }
+                (if (inPlace.isEmpty()) "Here's $period. " else "Here's $period in ${w.place}. ") + parts.joinToString(" ")
+            }
+        }
     }
 
     private fun degreesToCompass(deg: Double): String {

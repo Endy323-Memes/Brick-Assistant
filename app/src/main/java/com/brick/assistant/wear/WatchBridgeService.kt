@@ -39,7 +39,8 @@ class WatchBridgeService : WearableListenerService() {
             try {
                 container.assistant.handle(text) { entry ->
                     container.log.add(entry)
-                    send(context, node, LINE, JSONObject().put("who", who(entry.speaker)).put("text", entry.text))
+                    // Terminal readouts are too wide for a watch face: the watch gets the spoken lines only.
+                    if (!entry.panel) send(context, node, LINE, JSONObject().put("who", who(entry.speaker)).put("text", entry.text))
                 }
             } catch (c: CancellationException) {
                 throw c

@@ -109,13 +109,22 @@ object SearchService {
         RegexOption.IGNORE_CASE,
     )
 
+    /** A short answer, where it came from ("Wikipedia"), its title, and the source's picture if it has one. */
+    class Answer(val text: String, val source: String?, val title: String?, val image: String?)
+
     /** Short spoken answer from DuckDuckGo Instant Answers, then Wikipedia. Null if nothing useful. */
-    suspend fun quickAnswer(query: String): String? = withContext(Dispatchers.IO) {
+    suspend fun quickAnswer(query: String): String? = answer(query)?.text
+
+    suspend fun answer(query: String): Answer? = withContext(Dispatchers.IO) {
         Http.getJson("https://api.duckduckgo.com/?q=${Http.enc(query)}&format=json&no_html=1&skip_disambig=1")?.let { o ->
             val text = listOf("Answer", "AbstractText", "Definition")
                 .map { o.optString(it, "") }
                 .firstOrNull { it.isNotBlank() && it.length > 2 }
-            if (text != null) return@withContext shorten(text)
+            if (text != null) {
+                val img = o.optString("Image", "").takeIf { it.isNotBlank() }?.let { if (it.startsWith("/")) "https://duckduckgo.com$it" else it }
+                val source = o.optString("AbstractSource", "").ifBlank { null }
+                return@withContext Answer(shorten(text), source, o.optString("Heading", "").ifBlank { null }, img)
+            }
         }
         val topic = query.replace(questionPrefix, "").trim().ifBlank { query }
         val search = Http.getJson(
@@ -125,7 +134,10 @@ object SearchService {
         if (!title.isNullOrBlank()) {
             val summary = Http.getJson("https://en.wikipedia.org/api/rest_v1/page/summary/${Http.enc(title.replace(' ', '_'))}")
             val extract = summary?.optString("extract", "")
-            if (!extract.isNullOrBlank()) return@withContext shorten(extract)
+            if (!extract.isNullOrBlank()) {
+                val img = summary.optJSONObject("thumbnail")?.optString("source")?.takeIf { it.isNotBlank() }
+                return@withContext Answer(shorten(extract), "Wikipedia", summary.optString("title", title), img)
+            }
         }
         null
     }

@@ -22,6 +22,10 @@ interface AssistUi {
     fun setMicLevel(level: Float)
     /** Brick's own playback level, so the card can follow the voice that's speaking. */
     fun setOutputLevel(source: () -> Float) {}
+    /** A terminal readout under the answer (the night sky panel), or null to clear it. */
+    fun setPanel(readout: com.brick.assistant.brain.Readout?) {}
+    /** Answering in text only (quiet outdoors): the card says so. */
+    fun setQuiet(on: Boolean) {}
 }
 
 /**
@@ -48,11 +52,26 @@ class AssistController(
     private fun holdWakeWord() { if (!holdingWakeWord) { holdingWakeWord = true; WakeWordGate.hold() } }
     private fun releaseWakeWord() { if (holdingWakeWord) { holdingWakeWord = false; WakeWordGate.release() } }
 
+    /**
+     * Battery's one-purpose gestures (Spotify search, directions...): the next request is read for this topic,
+     * then it's cleared (follow-up answers are ordinary requests).
+     */
+    var topic: com.brick.assistant.brain.Topic? = null
+
+    /** Runs a topic that needs nothing said (the night sky report, photo spots near you). */
+    fun runInstant(t: com.brick.assistant.brain.Topic) {
+        val text = t.instant ?: return
+        topic = t
+        holdWakeWord()
+        handle(text)
+    }
+
     fun start() {
         job?.cancel()
         listener.cancel()
         holdWakeWord() // the Hey Brick listener steps aside until this request is finished
-        ui.setState(PulseView.Mode.LISTENING, "Go ahead…")
+        val t = topic
+        ui.setState(PulseView.Mode.LISTENING, if (t != null) "${t.prompt}: ${t.hint}…" else "Go ahead…")
         job = scope.launch {
             listening = true
             if (!listener.isAvailable()) {
@@ -141,11 +160,19 @@ class AssistController(
         if (text.isNotBlank()) container.log.add(LogEntry(Speaker.USER, text))
         ui.setState(PulseView.Mode.THINKING, if (dictation && text.isBlank()) "(nothing)" else text)
         job?.cancel()
+        waitingToClose = false
         job = scope.launch {
             var lastDavid: String? = null
+            var panel = false
+            var answerChars = 0
+            val forTopic = topic
+            topic = null
             try {
-                container.assistant.handle(text) { e ->
+                container.assistant.handle(text, forTopic) { e ->
                     container.log.add(e)
+                    ui.setQuiet(container.assistant.lastTextOnly)
+                    if (e.panel) { panel = true; ui.setPanel(e.readout ?: com.brick.assistant.brain.Readout(e.text)); return@handle }
+                    if (e.speaker == Speaker.DAVID || e.speaker == Speaker.ROBOT) answerChars += e.text.length
                     when (e.speaker) {
                         Speaker.DAVID -> { lastDavid = e.text; ui.setState(PulseView.Mode.DAVID, e.text, text) }
                         Speaker.ROBOT -> ui.setState(PulseView.Mode.ROBOT, e.text, lastDavid ?: text)
@@ -164,7 +191,16 @@ class AssistController(
                     dictate()
                     return@launch
                 }
-                delay(1400)
+                // Time to read what wasn't spoken, or the readout (tap outside to close sooner).
+                val readMs = (answerChars / TermCard.CHARS_PER_SECOND * 1000).toLong() + 2500
+                waitingToClose = true
+                delay(
+                    when {
+                        container.assistant.lastTextOnly -> maxOf(readMs, if (panel) 10_000L else 4000L).coerceAtMost(25_000L)
+                        panel -> 10_000L
+                        else -> 1400L
+                    },
+                )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -182,6 +218,14 @@ class AssistController(
             delay(2200)
             onDone()
         }
+    }
+
+    /** Waiting out the time to read the answer before the card closes. */
+    @Volatile private var waitingToClose = false
+
+    /** You touched the readout (a switch, slider or button): the card stays up until you tap outside it. */
+    fun keepOpen() {
+        if (waitingToClose) { waitingToClose = false; job?.cancel() }
     }
 
     fun cancel() {

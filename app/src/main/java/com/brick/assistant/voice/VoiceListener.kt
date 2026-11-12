@@ -45,9 +45,25 @@ class VoiceListener(context: Context) {
      * recognize instead of the phone's microphone (the car's microphone in Android Auto).
      */
     fun start(cb: Callbacks, audio: android.os.ParcelFileDescriptor? = null, silenceMs: Long? = null) {
+        listenStart = System.currentTimeMillis()
+        stopRequested = false
+        startRound(cb, audio, silenceMs)
+    }
+
+    /** You tapped stop: deliver what was heard, never start another round. */
+    @Volatile private var stopRequested = false
+
+    /** When the current request started listening (on-device rounds that heard nothing restart within it). */
+    private var listenStart = 0L
+
+    private fun startRound(cb: Callbacks, audio: android.os.ParcelFileDescriptor?, silenceMs: Long?) {
         reset()
         val id = ++session
         callbacks = cb
+        OfflineSpeech.refresh(ctx)
+        // Brick records itself, so it can start over: with the regular recognizer when the on-device one fails,
+        // or for another on-device round when that one gave up on silence too soon.
+        retry = if (audio == null) ({ startRound(cb, null, silenceMs) }) else null
         if (audio == null && android.os.Build.VERSION.SDK_INT >= 33) {
             val level: (Float) -> Unit = { l -> main.post { if (id == session) cb.onLevel(l) } }
             // Bluetooth headphones connected: record from their microphone (opening the link takes a moment).
@@ -83,21 +99,42 @@ class VoiceListener(context: Context) {
     }
 
     private var lastPartial = ""
+    private var retry: (() -> Unit)? = null
+
+    /** True when [recognizer] is the on-device one. */
+    private var onDevice = false
 
     private fun begin(id: Int, cb: Callbacks, audio: android.os.ParcelFileDescriptor?, silenceMs: Long? = null) {
         lastPartial = ""
+        // Switch recognizers when the language pack finished downloading, or the on-device one gave up.
+        if (recognizer != null && onDevice != OfflineSpeech.usable) { recognizer?.destroy(); recognizer = null }
         val r = recognizer ?: create().also { recognizer = it }
+        val usingOnDevice = onDevice
         r.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) { if (id == session) cb.onReady() }
             override fun onBeginningOfSpeech() {}
             override fun onRmsChanged(rmsdB: Float) { if (id == session) cb.onLevel(((rmsdB + 1f) / 9f).coerceIn(0f, 1f)) }
             override fun onBufferReceived(buffer: ByteArray?) {}
             override fun onEndOfSpeech() { if (id == session) { cb.onLevel(0f); closeHeadset() } }
-            override fun onError(error: Int) = finish(id) { cb.onError(error) }
-            override fun onResults(results: Bundle?) = finish(id) {
+            override fun onError(error: Int) {
+                if ((error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) && listenAgain(id)) return
+                if (usingOnDevice && id == session && OfflineSpeech.isFallbackError(error)) {
+                    OfflineSpeech.giveUp(error)
+                    val again = retry
+                    if (again != null && lastPartial.isEmpty()) {
+                        closeHeadset()
+                        main.post { if (id == session) again() }
+                        return
+                    }
+                }
+                finish(id) { cb.onError(error) }
+            }
+            override fun onResults(results: Bundle?) {
                 // With a streamed source (headphones, car mic) the final result can come back empty: use the last partial.
                 val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.takeIf { it.isNotBlank() }
-                cb.onResult(text ?: lastPartial.takeIf { it.isNotBlank() })
+                    ?: lastPartial.takeIf { it.isNotBlank() }
+                if (text == null && listenAgain(id)) return
+                finish(id) { cb.onResult(text) }
             }
             override fun onPartialResults(partialResults: Bundle?) {
                 if (id != session) return
@@ -113,6 +150,8 @@ class VoiceListener(context: Context) {
             .putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
             .putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             .putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, ctx.packageName)
+        // No internet: ask the regular recognizer for its offline model instead of failing with a network error.
+        if (!usingOnDevice && OfflineSpeech.offline(ctx)) intent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
         if (silenceMs != null) {
             // Dictation: ask the recognizer to wait through pauses (not every recognizer honors this).
             intent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, silenceMs)
@@ -125,6 +164,20 @@ class VoiceListener(context: Context) {
                 .putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, 16_000)
         }
         r.startListening(intent)
+    }
+
+    /**
+     * Recognizers (the on-device one especially) end a turn as soon as they hear a noise and then silence (the
+     * tap, Brick's own listening sound), long before you start talking. While nothing was recognized and it's
+     * been under [PATIENCE_MS], quietly listen again.
+     */
+    private fun listenAgain(id: Int): Boolean {
+        if (stopRequested || id != session || lastPartial.isNotEmpty()) return false
+        if (System.currentTimeMillis() - listenStart >= PATIENCE_MS) return false
+        val again = retry ?: return false
+        closeHeadset()
+        main.post { if (id == session) again() }
+        return true
     }
 
     /**
@@ -201,6 +254,7 @@ class VoiceListener(context: Context) {
     /** Stop recording and deliver whatever was heard. */
     fun stop() {
         finishNow = true // during dictation: deliver what was said so far
+        stopRequested = true
         closeHeadset() // ends the audio stream, so the recognizer finishes with what it heard
         recognizer?.stopListening()
     }
@@ -236,12 +290,23 @@ class VoiceListener(context: Context) {
     }
 
     private fun create(): SpeechRecognizer {
+        onDevice = false
+        if (OfflineSpeech.usable && android.os.Build.VERSION.SDK_INT >= 33) {
+            try {
+                return SpeechRecognizer.createOnDeviceSpeechRecognizer(ctx).also { onDevice = true }
+            } catch (e: Exception) {
+                OfflineSpeech.giveUp(-1)
+            }
+        }
         val comp = recognizerComponent(ctx)
         return if (comp != null) SpeechRecognizer.createSpeechRecognizer(ctx, comp)
         else SpeechRecognizer.createSpeechRecognizer(ctx)
     }
 
     companion object {
+        /** How long Brick waits for you to start talking on the on-device recognizer. */
+        private const val PATIENCE_MS = 6_000L
+
         /** Best installed recognizer that isn't Brick itself (Google app first). */
         fun recognizerComponent(context: Context): ComponentName? {
             val services = context.packageManager.queryIntentServices(Intent(RecognitionService.SERVICE_INTERFACE), 0)

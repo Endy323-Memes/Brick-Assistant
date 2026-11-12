@@ -4,6 +4,8 @@ import com.brick.assistant.data.Category
 
 enum class TimerOp { PAUSE, RESUME, CANCEL, STATUS }
 
+enum class StopwatchOp { START, STOP, RESET, LAP, STATUS }
+
 enum class CalendarRange { TODAY, TOMORROW, WEEK, NEXT }
 
 enum class MusicCommand { PLAY_QUERY, PLAY_ANY, PAUSE, RESUME, NEXT, PREVIOUS }
@@ -36,6 +38,8 @@ enum class VizColors(val spoken: String) {
 /** A parsed user request. [category] selects which David response pool is used. */
 sealed class Request(val category: Category?) {
     data class Timer(val seconds: Long?) : Request(Category.TIMER)
+    /** "Start a stopwatch" / "stop the stopwatch" / "reset it" / "how long has the stopwatch been running". */
+    data class Stopwatch(val op: StopwatchOp) : Request(Category.TIMER)
     /** "Pause the timer" / "resume my timer" / "cancel all timers" / "how much time is left". */
     data class TimerControl(val op: TimerOp, val all: Boolean) : Request(Category.TIMER)
     /** [days] uses java.util.Calendar day constants; empty = one-time alarm. */
@@ -52,6 +56,28 @@ sealed class Request(val category: Category?) {
     data class FindPlace(val what: String, val kind: FindKind, val area: String?, val best: Boolean) : Request(Category.NAVIGATION)
     /** "When does Target close?" / "Is the library open?" */
     data class PlaceHours(val place: String, val ask: HoursAsk, val tomorrow: Boolean) : Request(Category.NAVIGATION)
+    /**
+     * Night-sky darkness (Bortle / light pollution). [darkest] = find the darkest sky within [radiusMiles] of you
+     * (or of [place]), or anywhere when [worldwide]; otherwise the sky quality at your location or at [place].
+     */
+    data class Sky(
+        val darkest: Boolean = false,
+        val radiusMiles: Int? = null,
+        val worldwide: Boolean = false,
+        val place: String? = null,
+        /** Answer only this: the Bortle class, the stars, the Milky Way, or all three (a night sky report). */
+        val aspect: SkyAspect = SkyAspect.REPORT,
+        /** You asked for the map ("show me the light pollution map"): open lightpollutionmap.app after answering. */
+        val map: Boolean = false,
+        /** You ended with "hide cords" (or similar): leave latitude and longitude off the readout. */
+        val hideCoords: Boolean = false,
+        /**
+         * You asked to obscure your location ("obscure my location", "use a fake location"): the answer is for where
+         * you really are, but the readout names a decoy place [obscureMiles] away (null = a random distance).
+         */
+        val obscure: Boolean = false,
+        val obscureMiles: Int? = null,
+    ) : Request(Category.NIGHT_SKY)
     /** "Show me photography spots in a 50 mile radius". */
     data class PhotoSpots(val radiusMiles: Int, val kind: SpotKind) : Request(Category.NAVIGATION)
     data class Reminder(val task: String, val time: ParsedTime) : Request(Category.REMINDER)
@@ -62,7 +88,18 @@ sealed class Request(val category: Category?) {
     /** [explicit] = you asked to search ("search for", "look up", "google"); otherwise Brick only tries to answer. */
     data class Search(val query: String, val explicit: Boolean = false) : Request(Category.SEARCH)
     data class Math(val result: MathEvaluator.Result) : Request(Category.MATH)
-    data class Weather(val city: String?, val tomorrow: Boolean, val aspect: WeatherAspect = WeatherAspect.GENERAL) : Request(Category.WEATHER)
+    data class Weather(
+        val city: String?,
+        val tomorrow: Boolean,
+        val aspect: WeatherAspect = WeatherAspect.GENERAL,
+        /** "... hide my location": the answer doesn't name where you are. */
+        val hidePlace: Boolean = false,
+        /** "... obscure my location": your forecast, under a decoy place [obscureMiles] away (null = random). */
+        val obscure: Boolean = false,
+        val obscureMiles: Int? = null,
+        /** "This week's weather" / "the weekend": the day-by-day forecast instead of one day. */
+        val span: WeatherSpan = WeatherSpan.DAY,
+    ) : Request(Category.WEATHER)
     data class Music(
         val command: MusicCommand,
         val query: String?,
@@ -148,6 +185,7 @@ object IntentParser {
      * flashlight"), so you don't need the exact words.
      */
     fun parse(raw: String): Request {
+        parseSavedPlace(clean(raw))?.let { return it }
         val first = parseStrict(raw)
         if (first !is Request.Search || first.explicit) return first
         val relaxed = relax(clean(raw))
@@ -261,6 +299,7 @@ object IntentParser {
         parseDiscord(raw)?.let { return it }
         parseReading(s)?.let { return it }
         parseYouTube(s)?.let { return it }
+        parseStopwatch(s)?.let { return it }
         parseTimerControl(s)?.let { return it }
         parseTimer(s)?.let { return it }
         parseReminder(s)?.let { return it }
@@ -277,6 +316,7 @@ object IntentParser {
         parseNowPlaying(sd)?.let { return it }
         parseAddToPlaylist(sd)?.let { return it }
         if (rx("^(?:i (?:really )?(?:like|love|dig) (?:this|that|the) (?:song|track|tune|one)|(?:like|love|heart|favou?rite|save|thumbs up) (?:this|that|the) (?:song|track|tune|one)(?: for me)?|add (?:this|that|the|it)(?: song| track)? to (?:my )?(?:likes|liked songs|favou?rites|library|liked)|(?:like|heart|favou?rite) (?:it|this)|thumbs up|this (?:song|track) (?:is fire|slaps|bangs|is good))$").matches(sd)) return Request.LikeSong
+        parseSky(s)?.let { return it }
         parsePhotoSpots(s)?.let { return it }
         parseHours(s)?.let { return it }
         parseFindPlace(s)?.let { return it }
@@ -286,6 +326,9 @@ object IntentParser {
         parseOpenApp(s)?.let { return it }
         parseBareTime(s)?.let { return it }
         MathEvaluator.tryParse(s)?.let { return Request.Math(it) }
+        // Nothing matched exactly, but it's clearly about sky darkness ("bortle?", "light pollution tonight"):
+        // answer that rather than searching the web.
+        skyByKeywords(s)?.let { return it }
         val explicit = rx("^(?:search\\b|look\\s+up\\b|google\\b|find\\s+out\\b|search\\s+the\\s+web\\b|web\\s+search\\b|bing\\b)").containsMatchIn(s)
         return Request.Search(searchQuery(s), explicit)
     }
@@ -529,6 +572,24 @@ object IntentParser {
         return Request.FindPlace(what, kind, area, best)
     }
 
+    /**
+     * Going to one of your saved places ("take me home", "let's go to work", "how do I get to mom's house",
+     * "show the gym on the map"). Only names you saved count, so "go home" never shadows anything else.
+     */
+    fun parseSavedPlace(s: String): Request? {
+        if (com.brick.assistant.data.Places.all.value.isEmpty()) return null
+        val t = s.replace(rx("\\s+(?:please|now|right now)$"), "").trim()
+        rx("^(?:show|open|find|pull up)\\s+(?:me\\s+)?(.+?)\\s+(?:on|in)\\s+(?:the\\s+)?(?:map|maps|google maps)$").find(t)?.let { m ->
+            com.brick.assistant.data.Places.find(m.groupValues[1])?.let { return Request.Navigate(it.name, directions = false) }
+        }
+        val m = rx(
+            "^(?:(?:let's|lets|i want to|i need to|i wanna|time to)\\s+)?(?:go|head|get|drive|walk|navigate|take me|bring me|get me|guide me|route me|" +
+                "(?:give me |get |show me (?:the )?)?directions|show me the way|how (?:do|can) i get)(?:\\s+(?:back|over))?\\s+(?:to\\s+)?(.+)$",
+        ).find(t) ?: return null
+        val place = com.brick.assistant.data.Places.find(m.groupValues[1]) ?: return null
+        return Request.Navigate(place.name, directions = true)
+    }
+
     private fun parseNavigation(s: String): Request? {
         fun dest(raw: String) = raw.replace(rx("^(?:the|my)\\s+"), "").replace(rx("\\s+(?:please|now)$"), "").trim()
 
@@ -593,6 +654,153 @@ object IntentParser {
         }?.toInt()?.coerceIn(1, PhotoSpots.MAX_MILES) ?: 25
         return Request.PhotoSpots(miles, kind)
     }
+
+    // ---------------------------------------------------------------- Night sky (Bortle, light pollution)
+
+    /** Words that only come up when you're asking about sky darkness. */
+    private const val SKY_WORDS = "bortle|light ?pollution|light polluted|dark ?sky|dark ?skies|darkest sky|darkest skies|sky (?:quality|darkness|brightness)|sqm|" +
+        "milky ?way|stargaz\\w*|star ?gaz\\w*|astro ?photo\\w*|night sky|sky report|stargazing report|how dark (?:is|are|does) (?:the |it )?(?:sky|skies|night|get)|skyglow|sky glow|see (?:the |any |many |more )?stars|stars (?:can i|i can|visible)|visible stars|how many stars"
+
+    /** Asking for the darkest / best place rather than how it is here. */
+    private const val SKY_FIND = "darkest|best|least (?:light )?polluted|lowest|find|where|places?|spots?|locations?|areas?|go|drive|nearest|closest|near me|nearby|around"
+
+    /** "within 50 miles", "in a 100 km radius", "30 mi" -> miles. */
+    private fun radiusMiles(s: String): Int? {
+        val m = rx("(\\d+(?:\\.\\d+)?)\\s*-?\\s*(miles?|mi|kilometers?|kilometres?|km|k)\\b").find(s) ?: return null
+        val n = m.groupValues[1].toDouble()
+        val miles = if (m.groupValues[2].startsWith("k")) n * 0.621371 else n
+        return miles.toInt().coerceIn(1, 3000)
+    }
+
+    private fun worldwide(s: String) =
+        rx("\\b(?:in the world|worldwide|world ?wide|on (?:earth|the planet)|anywhere|across the (?:world|globe|planet)|globally|on the globe|of the world|whole world|entire world)\\b").containsMatchIn(s)
+
+    /** A named place: "bortle in moab", "light pollution at joshua tree" (not "here", "near me", a radius...). */
+    private fun skyPlace(raw: String): String? {
+        // "... in reykjavik tonight" / "... in tokyo right now": the time isn't part of the place.
+        val s = raw.replace(rx("[,?!.]"), " ").replace(rx("\\s+"), " ").trim()
+            .replace(rx("\\s+(?:tonight|right now|now|today|this (?:week|weekend|month)|tomorrow(?: night)?|at night|like|please)$"), "")
+        val m = rx("\\b(?:in|at|for|near|around|over|of|on|from)\\s+(?!me\\b|here\\b|my\\b|this\\b|the world\\b|the area\\b|earth\\b|the planet\\b|a\\b|an\\b|\\d)([a-z][a-z .'-]{1,40})$").find(s) ?: return null
+        val p = m.groupValues[1].trim().removePrefix("the ").trim()
+        if (p.isEmpty() || rx("^(?:(?:my )?(?:location|area|place|spot|house|home|backyard|yard|neighbou?rhood|city|town)|here|me|us|tonight|now|right now|the moment|radius|miles?|km|world|earth|night|sky|the sky|stars|the night sky)$").matches(p)) return null
+        if (rx("\\b(?:miles?|km|kilometers?|radius|stars?|sky|milky way|bortle|pollution)\\b").containsMatchIn(p)) return null
+        return p
+    }
+
+    /** "... hide cords" / "hide my location" / "without coordinates" at the end: leave the coordinates off. */
+    private const val COORD_WORDS = "(?:cords?|coords?|chords?|cores|coordinates?|co-? ?ordinates?|location|lat(?:itude)?(?:\\s*(?:and|&|/|-)?\\s*long?(?:itude)?s?)?|lat ?longs?|gps|position|exact location)"
+    private const val HIDE_COORDS = "[,.]?\\s*(?:and\\s+|but\\s+|with\\s+)?(?:" +
+        // "hide cords", "no coordinates", "without the lat long", "don't include my location"
+        "(?:hide|no|without|minus|skip|remove|omit|exclude|drop|lose|forget|leave out|no need for|(?:don'?t|do not) (?:show|include|give|add|display|need))\\s+(?:the\\s+|my\\s+|any\\s+|your\\s+)?$COORD_WORDS(?:\\s+(?:out|off))?" +
+        // "cords off", "coordinates hidden", "location private"
+        "|(?:the\\s+|my\\s+)?$COORD_WORDS\\s+(?:off|hidden|private)" +
+        // "keep my location private", "privately", "private mode"
+        "|keep (?:my |the )?$COORD_WORDS (?:private|hidden|secret)|privately|private mode|in private" +
+        ")(?:\\s+please)?\\s*[.!]?$"
+
+    /** True when [s] ends with "hide cords" or the like. */
+    fun hidesCoords(s: String) = rx(HIDE_COORDS).containsMatchIn(s.lowercase().trim())
+
+    private const val LOC_WORDS = "(?:location|cords?|coords?|chords?|coordinates?|co-? ?ordinates?|position|gps|spot|whereabouts|place)"
+
+    /**
+     * "... obscure my location", "fake my cords", "use a random location", "decoy location by 500 miles",
+     * "pretend I'm somewhere else", "scramble my gps 1000 km away": a decoy place instead of yours. The optional
+     * distance is group 1 (number) and 2 (unit).
+     */
+    private const val OBSCURE = "[,.]?\\s*(?:and\\s+|but\\s+|with\\s+|please\\s+)?(?:" +
+        "(?:obscur\\w*|abscur\\w*|fake|spoof|scramble|randomi[sz]e|disguise|mask|blur|fuzz|jitter|shift|offset|move|change|alter|cloak|hide my real|don'?t (?:give|show|use) my real|anonymi[sz]e)\\s+(?:my\\s+|the\\s+|our\\s+)?$LOC_WORDS" +
+        "|(?:use\\s+|give\\s+(?:me\\s+)?|show\\s+|with\\s+|pick\\s+)?(?:a\\s+|an\\s+|some\\s+)?(?:fake|random|decoy|different|false|made[ -]up|bogus|dummy|phony|fake out|spoofed|obscured|scrambled)\\s+$LOC_WORDS" +
+        "|(?:my\\s+|the\\s+)?$LOC_WORDS\\s+(?:obscured|scrambled|faked|spoofed|randomi[sz]ed|disguised|masked|blurred)" +
+        "|decoy(?: mode)?|location decoy|obscure(?: it| mode)?|pretend (?:i'?m|i am|we'?re) (?:somewhere else|elsewhere|far away)|(?:put|place) me somewhere else" +
+        ")(?:\\s+(?:by|to|at|about|around|of|for|from me|from here)?\\s*(?:about\\s+|around\\s+)?(\\d{1,3}(?:[, ]\\d{3})+|\\d+)\\s*(miles?|mi|kilometers?|kilometres?|km)\\b)?(?:\\s+(?:away|off|out))?(?:\\s+please)?\\s*[.!]?$"
+
+    /** "obscure my location by 500 miles" -> (true, 500); "use a fake location" -> (true, null); else (false, null). */
+    fun obscures(s: String): Pair<Boolean, Int?> {
+        val m = rx(OBSCURE).find(s.lowercase().trim()) ?: return false to null
+        val n = m.groupValues[1].replace(Regex("[, ]"), "").toDoubleOrNull() ?: return true to null
+        val miles = if (m.groupValues[2].startsWith("k")) n * 0.621371 else n
+        return true to miles.toInt().coerceIn(OBSCURE_MIN_MILES, OBSCURE_MAX_MILES)
+    }
+
+    /** How far away a decoy location may be. */
+    const val OBSCURE_MIN_MILES = 100
+    const val OBSCURE_MAX_MILES = 3000
+
+    /** Takes the "hide cords" and "obscure my location" endings off (either order), applying them to the request. */
+    private fun withPrivacy(raw: String, parse: (String) -> Request?): Request? {
+        val p = privacy(raw.lowercase())
+        val r = parse(p.text) as? Request.Sky ?: return parse(p.text)
+        return r.copy(hideCoords = r.hideCoords || p.hide, obscure = p.obscure, obscureMiles = p.obscureMiles)
+    }
+
+    /** A question with its "hide my location" / "obscure my location" endings taken off. */
+    private class Privacy(val text: String, val hide: Boolean, val obscure: Boolean, val obscureMiles: Int?)
+
+    private fun privacy(raw: String): Privacy {
+        var t = raw.trim()
+        var hide = false
+        var obscure: Pair<Boolean, Int?> = false to null
+        repeat(2) {
+            if (hidesCoords(t)) { hide = true; t = t.replace(rx(HIDE_COORDS), "").trim() }
+            val o = obscures(t)
+            if (o.first) { obscure = o; t = t.replace(rx(OBSCURE), "").trim() }
+        }
+        return Privacy(t, hide, obscure.first, obscure.second)
+    }
+
+    // The privacy endings aren't part of the question (their "location" would read as "here").
+    fun parseSky(raw: String): Request? = withPrivacy(raw, ::parseSkyQuestion)
+
+    private fun parseSkyQuestion(t: String): Request? {
+        if (!rx("\\b(?:$SKY_WORDS)").containsMatchIn(t)) return null
+        // "play milky way by ..." is a song.
+        if (rx("^(?:play|put on|listen to|shuffle|queue)\\b").containsMatchIn(t)) return null
+        val world = worldwide(t)
+        val radius = radiusMiles(t)
+        val find = world || radius != null || rx("\\b(?:$SKY_FIND)\\b").containsMatchIn(t) &&
+            // "where can I see the milky way" is a search; "can I see the milky way here" is not.
+            !rx("\\b(?:here|my (?:location|area|house|home|backyard|yard)|where i am|right now|tonight)\\b").containsMatchIn(t)
+        val place = if (world) null else skyPlace(t)
+        val aspect = skyAspect(t)
+        val map = rx("\\bmaps?\\b").containsMatchIn(t)
+        return if (find) Request.Sky(darkest = true, radiusMiles = if (world) null else radius ?: (if (place == null) DEFAULT_SKY_RADIUS else null), worldwide = world, place = place, aspect = aspect, map = map)
+        else Request.Sky(place = place, aspect = aspect, map = map)
+    }
+
+    /**
+     * What you asked about: "bortle level" or "light pollution" -> just the Bortle class, "how many stars" -> just
+     * the stars, "milky way" -> just the Milky Way. A "night sky report", a general question ("how's the
+     * stargazing") or more than one of them -> all three.
+     */
+    fun skyAspect(t: String): SkyAspect {
+        if (rx("\\b(?:report|everything|all (?:three|of it|the details)|overview|summary|full|details|conditions|rundown|breakdown|status)\\b").containsMatchIn(t)) return SkyAspect.REPORT
+        val asked = listOfNotNull(
+            SkyAspect.BORTLE.takeIf { rx("\\b(?:bortle|light ?pollut\\w*|sqm|sky (?:quality|darkness|brightness)|how (?:dark|bright|polluted)|sky ?glow)").containsMatchIn(t) },
+            SkyAspect.STARS.takeIf { rx("\\b(?:how many stars|stars? (?:count|visible|can i|i can|will i|could i)|visible stars|number of stars|see (?:the |any |many |more )?stars|limiting magnitude)").containsMatchIn(t) },
+            SkyAspect.MILKY_WAY.takeIf { rx("\\bmilky ?way").containsMatchIn(t) },
+        )
+        return asked.singleOrNull() ?: SkyAspect.REPORT
+    }
+
+    /**
+     * Last chance before a web search: any sky-darkness keyword at all ("bortle", "how polluted is the sky",
+     * "milky way tonight") becomes a sky request, so loose wording still gets an answer.
+     */
+    fun skyByKeywords(s: String): Request? = withPrivacy(s, ::skyKeywordQuestion)
+
+    private fun skyKeywordQuestion(t: String): Request? {
+        val keyword = rx("\\b(?:$SKY_WORDS|bortal|bortel|$BORTLE_HEARD|sky dark\\w*|dark (?:place|spot|area|location)s?|polluted sky|pollution (?:level|map)|stars? (?:tonight|out)|milky)").containsMatchIn(t)
+        if (!keyword || rx("^(?:play|put on|listen to|shuffle|queue)\\b").containsMatchIn(t)) return null
+        return parseSky(t.replace(rx("\\b(?:bortal|bortel)\\b"), "bortle").replace(rx("\\b$BORTLE_HEARD\\b"), "bortle $1").replace(rx("\\bmilky\\b(?! ?way)"), "milky way"))
+            ?: Request.Sky(darkest = rx("\\b(?:$SKY_FIND)\\b").containsMatchIn(t), radiusMiles = radiusMiles(t) ?: DEFAULT_SKY_RADIUS.takeIf { rx("\\b(?:$SKY_FIND)\\b").containsMatchIn(t) }, aspect = skyAspect(t))
+    }
+
+    /** How speech recognition mishears "bortle level/scale/class": "border level", "portal scale", "bottle class". */
+    private const val BORTLE_HEARD = "(?:portal|border|boarder|bottle|bortle's|portals?|borders?) (level|scale|class|rating|number)"
+
+    /** "Find the darkest sky near me" with no distance: look this far. */
+    const val DEFAULT_SKY_RADIUS = 60
 
     // ---------------------------------------------------------------- Timer
 
@@ -860,6 +1068,18 @@ object IntentParser {
         return null
     }
 
+    private fun parseStopwatch(s: String): Request? {
+        if (!rx("\\bstop ?watch(?:es)?\\b|\\bstart timing\\b|\\btime me\\b").containsMatchIn(s)) return null
+        val op = when {
+            rx("\\b(?:reset|clear|restart|zero)\\b").containsMatchIn(s) -> StopwatchOp.RESET
+            rx("\\blap\\b|\\bsplit\\b").containsMatchIn(s) -> StopwatchOp.LAP
+            rx("\\b(?:how long|how much time|what'?s|check|show|status|elapsed|time on)\\b").containsMatchIn(s) -> StopwatchOp.STATUS
+            rx("\\b(?:stop|pause|end|halt|freeze|finish)\\b(?! ?watch)").containsMatchIn(s) -> StopwatchOp.STOP
+            else -> StopwatchOp.START
+        }
+        return Request.Stopwatch(op)
+    }
+
     private fun parseTimer(s: String): Request? {
         val isTimer = rx("\\btimer\\b|\\bcount\\s?down\\b").containsMatchIn(s) ||
             rx("^(?:start|set)\\s+(?:a\\s+)?(?:\\d+|an?|half an?)\\s+\\S+\\s+(?:timer|countdown)").containsMatchIn(s)
@@ -938,7 +1158,17 @@ object IntentParser {
 
     // ---------------------------------------------------------------- Weather
 
-    private fun parseWeather(s: String): Request? {
+    /**
+     * "weather tomorrow, hide my location" (no place name in the answer) or "... obscure my location [by 500 miles]"
+     * (the forecast stays yours, the place named is a decoy), the same endings as the night sky ones.
+     */
+    private fun parseWeather(raw: String): Request? {
+        val p = privacy(raw)
+        val r = parseWeatherQuestion(p.text) as? Request.Weather ?: return null
+        return r.copy(hidePlace = p.hide, obscure = p.obscure, obscureMiles = p.obscureMiles)
+    }
+
+    private fun parseWeatherQuestion(s: String): Request? {
         if (rx("\\b(?:cold|hot|warm|chilly|freezing|nice) outside\\b|what's it like outside|how is it outside|need a (?:jacket|coat)").containsMatchIn(s)) {
             return Request.Weather(null, rx("\\btomorrow\\b").containsMatchIn(s), if (rx("\\b(?:cold|hot|warm|chilly|freezing)\\b").containsMatchIn(s)) WeatherAspect.TEMPERATURE else WeatherAspect.GENERAL)
         }
@@ -954,10 +1184,19 @@ object IntentParser {
             rx("\\b(?:rain|raining|rainfall|rainy|umbrella|precipitation)\\b").containsMatchIn(s) -> if (amount) WeatherAspect.RAIN_AMOUNT else WeatherAspect.RAIN_CHANCE
             else -> WeatherAspect.GENERAL
         }
-        val cityMatch = rx("\\b(?:in|for|at)\\s+([A-Za-z][A-Za-z .'-]*?)(?:\\s+(?:today|tomorrow|right now|now|this week|tonight|like))?$").find(s)
+        val span = when {
+            rx("\\bweekend\\b").containsMatchIn(s) -> WeatherSpan.WEEKEND
+            rx("\\b(?:this week|the week|week's|weeks|weekly|week ahead|coming week|next week|rest of the week|whole week|all week|" +
+                "(?:next )?(?:7|seven|five|5) days?|(?:7|seven|5|five) day|next few days|coming days|days ahead|extended)\\b").containsMatchIn(s) -> WeatherSpan.WEEK
+            else -> WeatherSpan.DAY
+        }
+        val cityMatch = rx(
+            "\\b(?:in|for|at)\\s+([A-Za-z][A-Za-z .'-]*?)(?:\\s+(?:today|tomorrow|right now|now|this week|this weekend|the weekend|next week|" +
+                "for the week|for the weekend|for the next (?:7|seven|five|5|few) days|tonight|like))?$",
+        ).find(s)
         var city = cityMatch?.groupValues?.get(1)?.trim()
-        if (city != null && rx("^(?:the\\s+.*|my\\s+area|here|outside|my location|today|tomorrow)$").matches(city)) city = null
-        return Request.Weather(city?.takeIf { it.isNotBlank() }, tomorrow, aspect)
+        if (city != null && rx("^(?:the\\s+.*|my\\s+area|here|outside|my location|today|tomorrow|this week|this weekend|next week|weekend|week)$").matches(city)) city = null
+        return Request.Weather(city?.takeIf { it.isNotBlank() }, tomorrow && span == WeatherSpan.DAY, aspect, span = span)
     }
 
     // ---------------------------------------------------------------- Music

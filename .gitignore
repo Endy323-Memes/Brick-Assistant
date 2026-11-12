@@ -26,6 +26,10 @@ google-services.json
 # Rebuild it with tools/render-david-words.ps1 (see README "Building").
 app/src/main/assets/david_words/words.adpcm
 
+# Night-sky grid derived from the World Atlas of Artificial Night Sky Brightness (Falchi et al. 2016). The
+# dataset restricts redistribution, so it stays out of the repository. Rebuild it with tools/sky-grid (README).
+app/src/main/assets/sky/
+
 # OS junk
 .DS_Store
 Thumbs.db

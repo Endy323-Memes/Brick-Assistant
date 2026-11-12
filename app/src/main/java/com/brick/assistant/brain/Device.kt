@@ -232,7 +232,8 @@ object Clock {
 // ==================================================================== Device controls
 
 object DeviceControls {
-    @Volatile private var torchOn = false
+    @Volatile var torchOn = false
+        private set
     private var torchWatching = false
 
     private fun camera(context: Context) = context.getSystemService(CameraManager::class.java)

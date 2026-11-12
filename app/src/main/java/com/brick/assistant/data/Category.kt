@@ -55,6 +55,11 @@ enum class Category(
         "Today's weather is 72 degrees with partly cloudy skies.",
         listOf("Checking the skies.", "Let me look outside for you.", "Here is your forecast."),
     ),
+    NIGHT_SKY(
+        "Night Sky",
+        "Your location is Bortle 6.0, a bright suburban sky.",
+        listOf("Looking up.", "Let me read the stars.", "Checking how dark it gets.", "Scanning the night sky."),
+    ),
     MUSIC(
         "Music",
         "Playing classic rock.",

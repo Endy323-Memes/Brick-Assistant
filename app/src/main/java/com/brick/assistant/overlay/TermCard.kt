@@ -72,7 +72,31 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
     private val header = text(12.5f, textHigh, bold = true)
     private val status = text(11.5f, blue, bold = true)
     private val history = text(13f, textMid).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END }
-    private val main = text(16f, textHigh).apply { maxLines = 5; ellipsize = TextUtils.TruncateAt.END }
+    private val main = text(16f, textHigh)
+
+    /**
+     * The answer, in a box that never grows past [MAIN_LINES] lines: longer answers scroll instead, following
+     * along as they're read out (auto-scroll), and you can drag through them yourself (that stops the follow).
+     */
+    private val mainScroll = object : android.widget.ScrollView(context) {
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            val cap = main.lineHeight * MAIN_LINES + main.paddingTop + main.paddingBottom
+            super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(cap, MeasureSpec.AT_MOST))
+        }
+    }.apply {
+        isVerticalScrollBarEnabled = true
+        isScrollbarFadingEnabled = true
+        overScrollMode = View.OVER_SCROLL_NEVER
+        addView(main)
+    }
+    /** When the current answer appeared (auto-scroll paces itself from here), or 0 when not following. */
+    private var followSince = 0L
+    private val tapDetector = android.view.GestureDetector(context, object : android.view.GestureDetector.SimpleOnGestureListener() {
+        override fun onSingleTapUp(e: android.view.MotionEvent): Boolean { this@TermCard.performClick(); return true }
+    })
+
+    /** A terminal readout to show in its own card above this one (the night sky panel), or null to hide it. */
+    var onPanel: ((com.brick.assistant.brain.Readout?) -> Unit)? = null
 
     /** True while the type box is open (typing to Brick instead of speaking). */
     var typing = false
@@ -171,7 +195,14 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
         }
         content.addView(top)
         content.addView(history, LinearLayout.LayoutParams(-1, -2).apply { topMargin = (14 * d).toInt() })
-        content.addView(main, LinearLayout.LayoutParams(-1, -2).apply { topMargin = (6 * d).toInt() })
+        content.addView(mainScroll, LinearLayout.LayoutParams(-1, -2).apply { topMargin = (6 * d).toInt() })
+        @SuppressLint("ClickableViewAccessibility")
+        mainScroll.setOnTouchListener { _, e ->
+            // Your finger takes over from the auto-scroll; a plain tap still works like tapping the card.
+            if (e.actionMasked == android.view.MotionEvent.ACTION_DOWN) followSince = 0L
+            tapDetector.onTouchEvent(e)
+            false
+        }
         // The type box (hidden until you tap "type").
         typeRow.addView(text(16f, blue, bold = true).apply { text = "you$ " })
         typeRow.addView(input, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -223,7 +254,20 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
 
     // ------------------------------------------------------------------ AssistUi
 
+    override fun setPanel(readout: com.brick.assistant.brain.Readout?) { onPanel?.invoke(readout) }
+
+    private var quiet = false
+    override fun setQuiet(on: Boolean) { if (on != quiet) { quiet = on; render(force = true) } }
+
     override fun setState(mode: PulseView.Mode, mainText: String, subText: String?) {
+        // A new request clears the last readout.
+        if (mode == PulseView.Mode.LISTENING || mode == PulseView.Mode.THINKING) setPanel(null)
+        // A new answer starts at the top and follows along as it's read out.
+        if (mainText != this.mainText || mode != this.mode) {
+            val answer = mode == PulseView.Mode.DAVID || mode == PulseView.Mode.ROBOT || mode == PulseView.Mode.MESSAGE
+            followSince = if (answer) SystemClock.uptimeMillis() else 0L
+            if (answer) mainScroll.scrollTo(0, 0)
+        }
         this.mode = mode
         this.mainText = mainText
         this.subText = subText
@@ -261,8 +305,8 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
         status.text = when (mode) {
             PulseView.Mode.LISTENING -> if (typing) "[ TYPING ]" else "[ LISTENING ]"
             PulseView.Mode.THINKING -> "[ ${spinner[((SystemClock.uptimeMillis() / 80) % spinner.size).toInt()]} WORKING ]"
-            PulseView.Mode.DAVID -> "[ BRICK ]"
-            PulseView.Mode.ROBOT -> "[ UNIT ]"
+            PulseView.Mode.DAVID -> if (quiet) "[ BRICK · MUTED ]" else "[ BRICK ]"
+            PulseView.Mode.ROBOT -> if (quiet) "[ UNIT · MUTED ]" else "[ UNIT ]"
             PulseView.Mode.MESSAGE -> "[ ! ]"
         }
         val sub = subText?.takeIf { it.isNotBlank() }
@@ -314,7 +358,27 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
             bars[i] += (target - bars[i]) * min(1f, dt * if (target > bars[i]) 24f else 8f)
         }
         render()
+        follow(now)
         invalidate()
+    }
+
+    /**
+     * Keeps the part being read out in view: the answer scrolls at about speaking pace, holding the current line a
+     * little above the middle. While you're talking or typing, the newest words stay in view.
+     */
+    private fun follow(now: Long) {
+        val max = (main.height - mainScroll.height).coerceAtLeast(0)
+        if (max == 0) return
+        if (mode == PulseView.Mode.LISTENING || mode == PulseView.Mode.THINKING) {
+            if (mainScroll.scrollY != max) mainScroll.scrollTo(0, max)
+            return
+        }
+        if (followSince == 0L) return
+        val total = (mainText.length / CHARS_PER_SECOND).coerceAtLeast(1f)
+        val done = ((now - followSince) / 1000f / total).coerceIn(0f, 1f)
+        val target = (done * main.height - mainScroll.height * 0.55f).toInt().coerceIn(0, max)
+        if (target > mainScroll.scrollY) mainScroll.scrollTo(0, target)
+        if (done >= 1f && mainScroll.scrollY >= max) followSince = 0L
     }
 
     // ------------------------------------------------------------------ drawing
@@ -377,5 +441,12 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
     fun animateOut(end: () -> Unit) {
         animate().alpha(0f).translationY(30 * d).setDuration(220)
             .setInterpolator(DecelerateInterpolator()).withEndAction(end).start()
+    }
+
+    companion object {
+        /** The answer box shows at most this many lines (the card's usual size); longer answers scroll. */
+        const val MAIN_LINES = 5
+        /** About how fast Brick and the unit speak (and how fast you read): paces the auto-scroll. */
+        const val CHARS_PER_SECOND = 14f
     }
 }
