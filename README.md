@@ -24,8 +24,8 @@ Digital assistant app).
   AccuWeather, Pirate Weather, Visual Crossing, WeatherAPI.com, OpenWeatherMap (each with your own key), the
   US National Weather Service or Open-Meteo (no key). If a source fails, Brick falls back to Open-Meteo. Say
   "hide my location" or "obscure my location" to keep the place out of the answer.
-- **Music:** works with the Driver player (play, effects, presets, lyrics, likes, playlists) and Spotify (exact
-  matches, your own playlists after connecting), plus YouTube and YouTube Music.
+- **Music:** works with Spotify (exact matches, your own playlists after connecting), YouTube and YouTube Music,
+  with lyrics for the song playing now.
 - **Maps:** directions (Google Maps opens the route, you press Start), opening hours, food and shops,
   photography spots, and **saved places**: save "home" with an address and say "take me home". Places can be
   renamed, imported and exported.
@@ -35,13 +35,11 @@ Digital assistant app).
   the car are connected.
 - **Android Auto:** Brick has its own screen in the car launcher (turn on Unknown sources in Android Auto's
   developer settings).
-- **Battery (edge gestures):** the companion Battery app can open Brick straight to night sky, photo spots,
-  Spotify, Driver, YouTube or directions.
 
 ## Make it yours
 
 - **Responses tab:** add, edit and preview Brick's lines for each request type. Rules give specific requests
-  (e.g. *Driver › Reverb › Turn on*) their own lines, falling back to broader pools. Export and import as JSON.
+  (e.g. *Animals › Bugs and insects*) their own lines, falling back to broader pools. Export and import as JSON.
 - **Settings:** voices (speed, pitch, expression), color palettes (presets, a color picker, import and export),
   weather source and keys, saved places, wake word, quiet outdoors and more. Many settings can also be changed
   by voice ("turn off Hey Brick", "use Celsius").

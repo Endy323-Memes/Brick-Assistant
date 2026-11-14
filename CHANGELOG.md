@@ -1,5 +1,20 @@
 # Brick update log
 
+## 1.4
+
+### New features
+- **Field guide:** ask about animals, plants, bugs, fish and sea life in plain words. Covers lifespan, diet, habitat, predators, size, bloom times, toxic or safe, bites and stings, pest tips, life cycles, swim speed, dive depth, fresh or salt water, and breathing.
+- **Sports:** scores, results, schedules and champions.
+- **History:** events, people, and what happened on this day.
+- **More lookups:** characters, creators, franchises, YouTubers, phone numbers, rankings, news, new releases, prices and deals.
+- **Phobia filters** (Settings › Phobia filters): block searches about spiders, insects, snakes, sharks, the deep sea, holes, mice, birds, dogs, clowns, blood, needles or vomit. Each filter can allow the search without pictures, or show a web link instead.
+- **Brick History:** a companion app that saves your searches so repeat questions answer offline. Tap "Don't save" on a card to keep it out.
+
+### Improvements
+- Compact answer cards.
+- Better weather and Govee light handling.
+- "Hey Brick" matches more reliably.
+
 ## 1.3
 
 ### New features
@@ -24,10 +39,9 @@
 **Lyrics for the song playing now**
 - Ask for them in plain words: "show me the lyrics", "what are the words to this song", "what is he singing", "lyrics to *song* by *artist*".
 - They show on a small terminal-style card that follows the song, line by line or word by word when the lyrics are timed that way. The line playing now sits in a box with a percent and a `[#####.....]` bar. Tap a line to jump the song there.
-- Brick uses the best copy it can find: Driver's own lyrics first, then a `.lrc` file on the phone (only when Brick may read all files), then lrclib.net.
+- Brick uses the best copy it can find: a `.lrc` file on the phone (only when Brick may read all files), then lrclib.net.
 - The card stays open while you read. Tap outside it to close it.
 - **Full screen** opens the lyrics in Brick's own screen, with a seek bar, the time, and Play/Pause. It only opens for the song that's playing, and closes itself if the song changes. The screen stays on while the song plays.
-- "Download the lyrics" still asks Driver to save them.
 
 **Countdowns**
 - "How many days until Christmas", "how long until Friday", "countdown to Halloween", "days since New Year's", "how many sleeps until Christmas".
