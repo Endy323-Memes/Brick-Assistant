@@ -33,6 +33,76 @@ class AudioPlayer(context: Context) {
     @Volatile var outputLevel = 0f
         private set
 
+    /** True while the phone is in call mode for an answer, so the "Hey Brick" listener can use its echo cancelling. */
+    @Volatile var callMode = false
+
+    /** True only while Brick's voice is actually coming out (not while it waits on an answer between lines). */
+    @Volatile var playing = false
+        private set
+
+    /** Switching the phone's audio mode can take a moment: done off the main thread, in order. */
+    private val modeThread = java.util.concurrent.Executors.newSingleThreadExecutor { Thread(it, "brick-audio-mode") }
+    private var modeSet = false // only touched on modeThread
+
+    /**
+     * Puts the phone in call mode for one answer: it then takes its own speaker's sound out of the microphone (the
+     * same echo cancelling calls use), so "Hey Brick" can be heard over Brick. Brick's voice stays on the assistant
+     * channel and volume (the echo cancelling is weaker for it than for call audio, but still helps). Only on the
+     * phone's speaker: headphones don't echo into the microphone.
+     */
+    fun beginCallMode() {
+        if (callMode) return
+        callMode = true
+        modeThread.execute {
+            if (!callMode || modeSet) return@execute
+            try {
+                val headphones = setOf(
+                    android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                    android.media.AudioDeviceInfo.TYPE_BLE_HEADSET, android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER,
+                    android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES, android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                    android.media.AudioDeviceInfo.TYPE_USB_HEADSET,
+                )
+                if (audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { it.type in headphones }) {
+                    callMode = false
+                    return@execute
+                }
+                modeSet = true
+                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                    audioManager.availableCommunicationDevices
+                        .firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                        ?.let { audioManager.setCommunicationDevice(it) }
+                } else {
+                    @Suppress("DEPRECATION")
+                    audioManager.isSpeakerphoneOn = true
+                }
+            } catch (_: Exception) {
+                callMode = false
+                restoreMode()
+            }
+        }
+    }
+
+    /** Back to normal audio after the answer. */
+    fun endCallMode() {
+        callMode = false
+        modeThread.execute { restoreMode() }
+    }
+
+    private fun restoreMode() {
+        if (!modeSet) return
+        modeSet = false
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                audioManager.clearCommunicationDevice()
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.isSpeakerphoneOn = false
+            }
+            audioManager.mode = AudioManager.MODE_NORMAL
+        } catch (_: Exception) {}
+    }
+
     fun releaseFocus() {
         try { audioManager.abandonAudioFocusRequest(focusRequest) } catch (_: Exception) {}
     }
@@ -65,6 +135,7 @@ class AudioPlayer(context: Context) {
                 released = true
                 try { viz?.enabled = false; viz?.release() } catch (_: Exception) {}
                 outputLevel = 0f
+                playing = false
                 if (stopCurrent === mine) stopCurrent = null
                 try { mp.release() } catch (_: Exception) {}
             }
@@ -89,6 +160,7 @@ class AudioPlayer(context: Context) {
                 mp.prepare()
                 viz = startVisualizer(mp.audioSessionId)
                 mp.start()
+                playing = true
             } catch (e: Exception) {
                 finish()
             }

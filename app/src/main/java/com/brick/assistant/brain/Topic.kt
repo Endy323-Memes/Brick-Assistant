@@ -28,14 +28,14 @@ enum class Topic(val id: String, val prompt: String, val hint: String, val insta
                 music?.copy(app = app) ?: Request.Music(MusicCommand.PLAY_QUERY, q, app = app)
             }
             YOUTUBE -> {
-                val play = Regex("^(?:play|watch|put on)\\b", RegexOption.IGNORE_CASE).containsMatchIn(t)
+                val play = Patterns.get("^(?:play|watch|put on)\\b", true).containsMatchIn(t)
                 val q = stripLead(t, "(?:play|watch|put on|search(?: for)?|find|look up|show me)")
-                    .replace(Regex("\\s+(?:on|in)\\s+youtube$", RegexOption.IGNORE_CASE), "")
+                    .replace(Patterns.get("\\s+(?:on|in)\\s+youtube$", true), "")
                 Request.YouTube(q, play = play, music = false)
             }
             DIRECTIONS -> {
                 val q = stripLead(t, "(?:navigate|directions|get directions|give me directions|take me|drive|go|route me)(?:\\s+to)?")
-                Request.Navigate(q.replace(Regex("^(?:the|my)\\s+", RegexOption.IGNORE_CASE), ""), directions = true)
+                Request.Navigate(q.replace(Patterns.get("^(?:the|my)\\s+", true), ""), directions = true)
             }
         }
     }

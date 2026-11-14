@@ -1,5 +1,7 @@
 package com.brick.assistant.data
 
+import com.brick.assistant.brain.Patterns
+
 import android.content.Context
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,9 +31,9 @@ object Places {
 
     /** "home", "my home", "Home." all find the place named "Home". */
     fun key(name: String): String = name.lowercase()
-        .replace(Regex("[^\\p{L}\\p{N}' ]"), " ")
-        .replace(Regex("^(?:my|the|our)\\s+"), "")
-        .replace(Regex("\\s+"), " ").trim()
+        .replace(Patterns.get("[^\\p{L}\\p{N}' ]"), " ")
+        .replace(Patterns.get("^(?:my|the|our)\\s+"), "")
+        .replace(Patterns.get("\\s+"), " ").trim()
 
     /** The saved place called [spoken], if any ("my home" finds "Home"; "mom's house" finds "Mom's house"). */
     fun find(spoken: String): SavedPlace? {

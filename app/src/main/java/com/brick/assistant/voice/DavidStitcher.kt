@@ -18,7 +18,7 @@ interface WordSource {
 object DavidStitcher {
     class Result(val audio: PcmAudio, val lastWordStart: Int, val lastWordEnd: Int)
 
-    private val numberish = Regex("[0-9]")
+    private val numberish = Patterns.get("[0-9]")
 
     /** Lower-case words with a pause marker (0 none, 1 comma, 2 sentence end, 3 question end) after each. */
     fun tokenize(text: String): List<Pair<String, Int>> {

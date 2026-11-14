@@ -40,6 +40,10 @@ class ControlProvider : ContentProvider() {
         try {
             return when (method) {
                 METHOD_CARD -> openCard(ctx, voice = arg == "voice")
+                METHOD_ASK_TOKEN -> {
+                    val text = arg?.trim()?.takeIf { it.isNotEmpty() } ?: return result(false, "Nothing to ask")
+                    result(true).apply { putString("token", askToken(text)) }
+                }
                 METHOD_WAKE_WORD -> {
                     val now = settings.current.wakeWordEnabled
                     val want = when (arg) { "on" -> true; "off" -> false; "toggle" -> !now; else -> null }
@@ -113,7 +117,7 @@ class ControlProvider : ContentProvider() {
         if (uid == android.os.Process.myUid()) return true
         val pm = ctx.packageManager
         if (runCatching { pm.checkSignatures(uid, android.os.Process.myUid()) == PackageManager.SIGNATURE_MATCH }.getOrDefault(false)) return true
-        return runCatching { pm.getPackagesForUid(uid)?.any { it == PaletteProvider.EDGE_PACKAGE } == true }.getOrDefault(false)
+        return runCatching { pm.getPackagesForUid(uid)?.any { it == PaletteProvider.EDGE_PACKAGE || it == PaletteProvider.HISTORY_PACKAGE } == true }.getOrDefault(false)
     }
 
     override fun query(uri: Uri, projection: Array<out String>?, selection: String?, selectionArgs: Array<out String>?, sortOrder: String?): Cursor? = null
@@ -131,6 +135,25 @@ class ControlProvider : ContentProvider() {
         const val METHOD_WAKE_WORD = "wake_word"
         const val METHOD_GET = "get"
         const val METHOD_SET = "set"
+        /** arg = a request to run. → {ok, token}: start [AssistEntryActivity] with [AssistEntryActivity.EXTRA_ASK] = token. */
+        const val METHOD_ASK_TOKEN = "ask_token"
+
+        /** Requests waiting for their card, by one-time token (a trusted app asked; only it knows the token). */
+        private val asks = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
+
+        private fun askToken(text: String): String {
+            val now = System.currentTimeMillis()
+            asks.entries.removeIf { now - it.value.second > 60_000L }
+            val token = java.util.UUID.randomUUID().toString()
+            asks[token] = text to now
+            return token
+        }
+
+        /** The request for [token] (used once, within a minute), or null. */
+        fun redeemAsk(token: String): String? {
+            val a = asks.remove(token) ?: return null
+            return a.first.takeIf { System.currentTimeMillis() - a.second < 60_000L }
+        }
 
         const val KEY_WAKE_WORD = "wakeWord"
         const val KEY_POCKET_PAUSE = "pocketPause"

@@ -1,5 +1,7 @@
 package com.brick.assistant.ui
 
+import com.brick.assistant.brain.Patterns
+
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -100,7 +102,7 @@ fun TermColorPicker(title: String, initial: Int, onApply: (Int) -> Unit, onDismi
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("$ ", style = MaterialTheme.typography.labelLarge, color = TermBlue)
                 Text("pick-color ", style = MaterialTheme.typography.labelLarge, color = TextHigh)
-                Text("--${title.lowercase().replace(' ', '-').replace(Regex("[()]"), "")}", style = MaterialTheme.typography.labelMedium, color = TextMid, maxLines = 1)
+                Text("--${title.lowercase().replace(' ', '-').replace(Patterns.get("[()]"), "")}", style = MaterialTheme.typography.labelMedium, color = TextMid, maxLines = 1)
             }
 
             // ---- Preview: old | new, with the hex code

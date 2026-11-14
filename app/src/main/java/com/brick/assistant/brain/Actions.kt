@@ -290,7 +290,7 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         return when (req) {
             is Request.YouTube -> com.brick.assistant.overlay.Brand.YOUTUBE
             is Request.Navigate, is Request.FindPlace -> if (maps) com.brick.assistant.overlay.Brand.GOOGLE_MAPS else null
-            is Request.PlaceHours, is Request.PhotoSpots -> com.brick.assistant.overlay.Brand.GOOGLE_MAPS
+            is Request.PlaceHours, is Request.PlaceNumber, is Request.PhotoSpots -> com.brick.assistant.overlay.Brand.GOOGLE_MAPS
             is Request.Music -> when {
                 req.app == MusicApp.SPOTIFY -> com.brick.assistant.overlay.Brand.SPOTIFY
                 req.command != MusicCommand.PLAY_ANY && req.command != MusicCommand.PLAY_QUERY -> playingBrand()
@@ -298,10 +298,10 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             }
             Request.LikeSong, is Request.AddToPlaylist -> playingBrand()
             is Request.OpenApp -> when {
-                Regex("spotify", RegexOption.IGNORE_CASE).containsMatchIn(req.name) -> com.brick.assistant.overlay.Brand.SPOTIFY
-                Regex("youtube", RegexOption.IGNORE_CASE).containsMatchIn(req.name) -> com.brick.assistant.overlay.Brand.YOUTUBE
-                Regex("maps", RegexOption.IGNORE_CASE).containsMatchIn(req.name) -> com.brick.assistant.overlay.Brand.GOOGLE_MAPS
-                Regex("^driver\\b", RegexOption.IGNORE_CASE).containsMatchIn(req.name.trim()) -> com.brick.assistant.overlay.Brand.DRIVER
+                Patterns.get("spotify", true).containsMatchIn(req.name) -> com.brick.assistant.overlay.Brand.SPOTIFY
+                Patterns.get("youtube", true).containsMatchIn(req.name) -> com.brick.assistant.overlay.Brand.YOUTUBE
+                Patterns.get("maps", true).containsMatchIn(req.name) -> com.brick.assistant.overlay.Brand.GOOGLE_MAPS
+                Patterns.get("^driver\\b", true).containsMatchIn(req.name.trim()) -> com.brick.assistant.overlay.Brand.DRIVER
                 else -> null
             }
             else -> null
@@ -324,7 +324,41 @@ class Actions(private val context: Context, private val settings: SettingsStore)
     }
 
     /** Runs [req]. Every answer comes with a card: its own, or a summary of the request and answer (see [withCard]). */
-    suspend fun prepare(req: Request): ActionResult = withCard(req, prepareInner(req))
+    suspend fun prepare(req: Request): ActionResult {
+        val s = settings.current
+        if (s.phobias.isEmpty() || req.category != com.brick.assistant.data.Category.SEARCH && req !is Request.YouTube) return withCard(req, prepareInner(req))
+        // Phobia filters: a search about a filtered subject doesn't happen at all, unless it's allowed (then no picture).
+        val asked = Phobias.hits(req.toString().replace(Regex("\\b\\w+="), " "), s.phobias)
+        asked.firstOrNull { it.key !in s.phobiasAllowed }?.let { return blocked(req, it) }
+        val r = withCard(req, prepareInner(req))
+        // What came back can be about it too ("what's the deadliest animal in Australia" → a spider): the answer, the card's
+        // heading and description, and an animal's class.
+        val card = r.readout?.text?.lines()?.let { ls -> (ls.take(4) + ls.filter { it.contains("CLASS") }).joinToString("\n") }
+        val found = Phobias.hits(r.robotLine + "\n" + card.orEmpty(), s.phobias)
+        found.firstOrNull { it.key !in s.phobiasAllowed }?.let { return blocked(req, it) }
+        if (asked.isEmpty() && found.isEmpty()) return r
+        return ActionResult(r.robotLine, r.confirm, r.returnToCard, r.navigateTo, r.dictate, r.voice, r.display, r.readout?.let { noPicture(it) }, r.after)
+    }
+
+    /** A search a phobia filter stopped; with that filter's "Show web links" on, a button to look it up yourself. */
+    private fun blocked(req: Request, p: Phobias.Phobia): ActionResult {
+        val line = Phobias.blockedLine(p)
+        if (p.key !in settings.current.phobiasLinks) return withCard(req, ActionResult(line))
+        val q = when (req) {
+            is Request.Search -> req.query
+            is Request.Animal -> req.ask.said
+            is Request.Character -> req.ask.said
+            is Request.History -> req.ask.subject
+            is Request.YouTube -> req.query
+            else -> HistoryLink.subject(req)
+        } ?: return withCard(req, ActionResult(line))
+        val open = { launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://duckduckgo.com/?q=${Uri.encode(q)}"))); Unit }
+        return ActionResult(line, readout = Readout(Box.build("SEARCH", Box.wrap(line)), controls = listOf(Control.Button("Web results", open))))
+    }
+
+    /** The same card without its picture (and every refresh of it too). */
+    private fun noPicture(ro: Readout): Readout =
+        Readout(ro.text, null, ro.controls, ro.refresh?.let { f -> { noPicture(f()) } }, ro.live, ro.lyrics)
 
     /** Gives [r] a summary card when it has none (errors, directions, apps, YouTube, notes, small talk...). */
     private fun withCard(req: Request, r: ActionResult): ActionResult {
@@ -341,6 +375,9 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             is Request.Countdown -> countdown(req)
             is Request.Device -> device(req)
             is Request.PhoneSettingReq -> phoneSetting(req)
+            is Request.SettingsPageReq -> settingsPage(req)
+            is Request.ScreenTimeoutReq -> screenTimeout(req)
+            is Request.AppSettingsReq -> appSettings(req)
             is Request.SmartHome -> smartHome(req)
             is Request.Note -> note(req)
             is Request.ReadNotifications -> readNotifications(req)
@@ -355,15 +392,26 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             is Request.Setting -> setting(req)
             is Request.Discord -> discord(req)
             is Request.PlaceHours -> placeHours(req)
+            is Request.PlaceNumber -> placeNumber(req)
             is Request.PhotoSpots -> photoSpots(req)
             is Request.Reminder -> reminder(req)
             is Request.CalendarEvent -> calendar(req)
             is Request.Text -> text(req)
             is Request.Call -> call(req)
             is Request.Search -> search(req)
+            is Request.Sports -> sports(req)
+            is Request.History -> history(req)
+            is Request.Character -> character(req)
+            is Request.Animal -> animal(req)
             is Request.Math -> math(req)
             is Request.Convert -> ActionResult(req.conversion.spoken, readout = info.conversion(req.conversion))
             is Request.Spell -> spell(req)
+            is Request.News -> news(req)
+            is Request.Ranked -> ranked(req)
+            is Request.WorkAsk -> workAsk(req)
+            is Request.Deals -> deals(req)
+            is Request.LatestWork -> latestWork(req)
+            is Request.Latest -> latest(req)
             is Request.MediaAsk -> media(req)
             is Request.Weather -> weather(req)
             is Request.Music -> music(req)
@@ -491,6 +539,74 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         }
     }
 
+    /** A page of the Settings app: open it (or say where it is, with a button to open it). */
+    private fun settingsPage(req: Request.SettingsPageReq): ActionResult {
+        val p = req.page
+        val card = info.settingsPage(p)
+        if (req.where) return ActionResult(
+            if (p == SettingsPage.MAIN) "It's the Settings app." else "It's in ${p.spokenPath}. Tap the button on the card to go there.",
+            readout = card,
+        )
+        val line = when (p) {
+            SettingsPage.MAIN -> "Opening Settings."
+            SettingsPage.CALLS -> "Opening the Phone app. Its settings are under the three dots, then Settings."
+            SettingsPage.RESET -> "Here are the reset options. Nothing gets reset unless you pick one."
+            SettingsPage.SOFTWARE_UPDATE -> "Here's software update. If Settings opens on its main page, Software update is near the bottom."
+            // No page of its own that apps may open: Settings' main list, where it is.
+            else -> if (p.targets.first() == "a:${android.provider.Settings.ACTION_SETTINGS}") "Opening Settings. ${p.title} is on the main list."
+            else "Here's the ${p.title} page."
+        }
+        return ActionResult(line, readout = card) { SettingsPages.open(context, p) }
+    }
+
+    /** The screen timeout: set it, a step longer or shorter, say it, or open it. */
+    private fun screenTimeout(req: Request.ScreenTimeoutReq): ActionResult {
+        val now = ScreenTimeout.get(context)
+        val page = SettingsPage.SCREEN_TIMEOUT
+        fun opened(line: String) = ActionResult(line, readout = info.screenTimeout()) { SettingsPages.open(context, page) }
+        when (req.ask) {
+            SettingAsk.WHERE -> return ActionResult("It's in ${page.spokenPath}. You can also just tell me how long.", readout = info.screenTimeout())
+            SettingAsk.STATUS -> {
+                if (req.open) return opened("Here's screen timeout.")
+                return ActionResult(
+                    if (now == null) "I couldn't read the screen timeout." else "Your screen turns off after ${ScreenTimeout.say(now)}.",
+                    readout = info.screenTimeout(),
+                )
+            }
+            SettingAsk.SET -> Unit
+        }
+        val target = req.ms ?: if (req.step != 0 && now != null) ScreenTimeout.step(now, req.step) else return opened("Here's screen timeout.")
+        val ms = target.coerceIn(ScreenTimeout.MIN, ScreenTimeout.MAX)
+        val note = when {
+            target > ScreenTimeout.MAX -> " That's the longest I can set."
+            target < ScreenTimeout.MIN -> " That's the shortest I can set."
+            else -> ""
+        }
+        if (now == ms) return ActionResult("Your screen timeout is already ${ScreenTimeout.say(ms)}.", readout = info.screenTimeout())
+        if (req.step != 0 && now != null && ms == now) {
+            return ActionResult("It's already as ${if (req.step > 0) "long" else "short"} as it goes: ${ScreenTimeout.say(now)}.", readout = info.screenTimeout())
+        }
+        if (!PhoneSettings.canWrite(context)) return ActionResult(
+            "I need permission to change system settings for that. Allow it for Brick, then ask again.", readout = info.screenTimeout(),
+        ) { launch(PhoneSettings.writePermission(context)) }
+        if (!ScreenTimeout.set(context, ms)) return opened("I couldn't change it, so here's screen timeout.")
+        return ActionResult("Your screen will now turn off after ${ScreenTimeout.say(ms)}.$note", readout = info.screenTimeout())
+    }
+
+    /** One app's App info or notifications page. */
+    private fun appSettings(req: Request.AppSettingsReq): ActionResult {
+        val app = AppLauncher.find(AppLauncher.installed(context), req.app)
+            ?: return ActionResult("I couldn't find an app called ${req.app}.")
+        val line = when (req.page) {
+            AppPage.NOTIFICATIONS -> "Here are ${app.label}'s notification settings."
+            AppPage.PERMISSIONS -> "Here's ${app.label}'s app info. Permissions is on that page."
+            AppPage.STORAGE -> "Here's ${app.label}'s app info. Storage, with Clear cache, is on that page."
+            AppPage.BATTERY -> "Here's ${app.label}'s app info. Battery is on that page."
+            AppPage.INFO -> "Here's ${app.label}'s app info."
+        }
+        return ActionResult(line) { SettingsPages.openApp(context, app.pkg, req.page) }
+    }
+
     /** Airplane mode, power saving or Do Not Disturb through the assistant session; the setting's page otherwise. */
     private fun assistantSwitch(st: PhoneSetting, on: Boolean, card: Readout): ActionResult {
         val intent = PhoneSettings.assistantIntent(st, on)
@@ -523,6 +639,7 @@ class Actions(private val context: Context, private val settings: SettingsStore)
                 (fallback?.let { " Here's ${it.label}." } ?: "")
             return ActionResult(line, readout = info.smartHome(key, emptyList())) { fallback?.open(context) }
         }
+        Govee.attach(context)
         val list = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { Govee.load(key) }
             ?: return ActionResult("Govee didn't accept the API key. Check it in Brick's settings, under Smart home.", readout = info.smartHome(key, emptyList()))
         if (list.isEmpty()) return ActionResult("I don't see any Govee lights on your account.", readout = info.smartHome(key, list))
@@ -906,6 +1023,74 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         ) || launch(Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=${Uri.encode(query)}")))
     }
 
+    /**
+     * A business's phone number: the nearest one with a number listed on OpenStreetMap, or (for a company's main or
+     * customer service line, or when nothing nearby lists one) Wikidata's number for the company. Call only dials
+     * when you tap it; with nothing listed, Google Maps opens on the place (its page shows the number).
+     */
+    private suspend fun placeNumber(req: Request.PlaceNumber): ActionResult {
+        val near = WeatherService.deviceLocation(context)
+        val found = if (req.support) null else PlaceHours.findNumber(req.place, near)
+        val nearest = found?.nearest
+        fun away(p: PlaceHours.Place) = near?.let { milesBetween(it.lat, it.lon, p.lat, p.lon) }
+        // Another branch's number is only worth giving when it isn't much farther than the closest one.
+        val local = found?.withPhone?.takeIf { w ->
+            w === nearest || (away(w) ?: 0.0) - (away(nearest!!) ?: 0.0) <= 3.0
+        }
+        var name = local?.name ?: nearest?.name ?: req.place.split(' ').joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } }
+        var phone = local?.phone
+        var source = "OpenStreetMap"
+        // The closest one lists no number: Google Maps (its page has it) beats a branch across town.
+        if (phone == null && nearest != null) {
+            val at = nearest.address?.substringBefore(',')?.let { " on ${it.replace(Regex("^\\d+\\s+"), "")}" } ?: ""
+            return ActionResult("The closest $name$at doesn't list a phone number, so I'll show it in Google Maps.") {
+                openMapsSearch("${nearest.name} ${nearest.address ?: ""}".trim())
+            }
+        }
+        if (phone == null) {
+            Lookup.page(req.place, setOf(LookupKind.COMPANY, LookupKind.PLATFORM))?.let { p ->
+                p.qid?.let { Lookup.claims(it) }?.let { c -> Lookup.factsFor(c, listOf("P1329"))["P1329"]?.firstOrNull() }?.let { n ->
+                    phone = n; name = p.title.substringBefore(" ("); source = "Wikidata"
+                }
+            }
+        }
+        val number = phone?.let { PlaceHours.prettyPhone(it) } ?: return when {
+            // A company's own line ("amazon customer service", "how do i contact comcast"): a store on the map won't have it.
+            req.support || local == null -> {
+                val q = "${req.place} customer service phone number"
+                ActionResult("I couldn't find a listed number for $name, so here are web results for it.") {
+                    launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://duckduckgo.com/?q=${Uri.encode(q)}")))
+                }
+            }
+            else -> ActionResult("I couldn't find a listed phone number for $name, so I'll show it in Google Maps.") { openMapsSearch(req.place) }
+        }
+        val dial = number.filter { it.isDigit() || it == '+' }
+        val where = local?.takeIf { source == "OpenStreetMap" }
+        val miles = if (where != null && near != null) milesBetween(near.lat, near.lon, where.lat, where.lon) else null
+        val at = where?.address?.substringBefore(',')?.let { " on ${it.replace(Regex("^\\d+\\s+"), "")}" } ?: ""
+        // The nearest store with a number listed can be a drive away: say so.
+        val far = miles?.takeIf { it >= 5 }?.let { " It's about ${it.toInt()} miles away." } ?: ""
+        val line = "The number for $name$at is $number.$far"
+        val rows = buildList {
+            add(Box.kv("NAME", name))
+            add(Box.kv("PHONE", number))
+            where?.address?.let { addAll(Box.wrap(it, Box.kv("ADDRESS", ""), max = 2)) }
+            miles?.let { add(Box.kv("AWAY", PhotoSpots.miles(it))) }
+            if (req.support || source == "Wikidata") add(Box.kv("LINE", "main / customer service"))
+            add("")
+            add(Box.kv("SOURCE", source))
+        }
+        val controls = buildList {
+            add(Control.Button("Call") { launch(Intent(Intent.ACTION_DIAL, Uri.parse("tel:${Uri.encode(dial)}"))) })
+            add(Control.Button("Copy") {
+                (context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager)
+                    ?.setPrimaryClip(android.content.ClipData.newPlainText(name, number))
+            })
+            add(Control.Button("Maps") { openMapsSearch(if (where != null) "${where.name} ${where.address ?: ""}" else req.place) })
+        }
+        return ActionResult(line, readout = Readout(Box.build("PHONE NUMBER", rows), controls = controls))
+    }
+
     private suspend fun placeHours(req: Request.PlaceHours): ActionResult {
         val near = WeatherService.deviceLocation(context)
         val p = PlaceHours.find(req.place, near)
@@ -1276,7 +1461,7 @@ class Actions(private val context: Context, private val settings: SettingsStore)
     // ---------------------------------------------------------------- search
 
     private suspend fun search(req: Request.Search): ActionResult {
-        val question = Regex("^(?:who|what|when|where|why|how|which|whose|is|are|was|were|do|does|did|can|could|will|would|should|has|have|tell me|define|meaning of)\\b", RegexOption.IGNORE_CASE)
+        val question = Patterns.get("^(?:who|what|when|where|why|how|which|whose|is|are|was|were|do|does|did|can|could|will|would|should|has|have|tell me|define|meaning of)\\b", true)
             .containsMatchIn(req.query)
         // A popular YouTube channel or video ("markiplier"): you most likely want it on YouTube.
         if ((req.explicit || !question) && req.query.split(" ").size <= 7) {
@@ -1291,14 +1476,14 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             }
         }
         val openBrowser = {
-            launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=${Uri.encode(req.query)}")))
+            launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://duckduckgo.com/?q=${Uri.encode(req.query)}")))
             Unit
         }
         // Someone or something with a page (an actor, a movie, a show, an app, a company...): look it up by kind,
         // with its facts. "what is photosynthesis"-style questions keep the quick answer first.
         val lq = Lookup.understand(req.query)
         if (Lookup.isEntityLookup(req.query, lq) || req.explicit) {
-            Lookup.find(lq)?.let { return lookupResult(req, it, openBrowser) }
+            Lookup.find(lq, settings.current.tmdbKey)?.let { return lookupResult(req, it, openBrowser) }
         }
         if (!req.explicit) {
             // Not asked to search: answer a question directly if possible, never open a web search.
@@ -1306,13 +1491,13 @@ class Actions(private val context: Context, private val settings: SettingsStore)
                 // A command Brick can't carry out ("order a pizza") isn't a topic to look up.
                 if (Wording.COMMAND.containsMatchIn(req.query)) return ActionResult("I can't do that yet.", readout = info.search(req.query, null, openBrowser))
                 // A bare topic ("the twelve days of christmas"): what it is.
-                Lookup.find(lq)?.let { return lookupResult(req, it, openBrowser) }
+                Lookup.find(lq, settings.current.tmdbKey)?.let { return lookupResult(req, it, openBrowser) }
                 SearchService.answer(req.query)?.let { return ActionResult(it.text, readout = info.search(req.query, it, openBrowser)) }
                 return ActionResult("I couldn't find a quick answer for that.", readout = info.search(req.query, null, openBrowser))
             }
             val a = SearchService.answer(req.query)
                 // No quick answer: maybe it's a page after all ("what's baywatch").
-                ?: Lookup.find(lq)?.let { return lookupResult(req, it, openBrowser) }
+                ?: Lookup.find(lq, settings.current.tmdbKey)?.let { return lookupResult(req, it, openBrowser) }
                 ?: return ActionResult("I can't answer that.", readout = info.search(req.query, null, openBrowser))
             return ActionResult(a.text, readout = info.search(req.query, a, openBrowser))
         }
@@ -1324,17 +1509,305 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         }
     }
 
+    // ---------------------------------------------------------------- sports and history
+
+    private suspend fun sports(req: Request.Sports): ActionResult {
+        val open: (String) -> Unit = { u -> launch(Intent(Intent.ACTION_VIEW, Uri.parse(u))) }
+        val a = runCatching { SportsDesk.answer(req.ask, open) }.getOrNull()
+            // A team or player Brick couldn't place: an ordinary search.
+            ?: return search(Request.Search(SportsDesk.fallbackQuery(req.ask)))
+        return ActionResult(a.line, readout = a.readout)
+    }
+
+    private suspend fun history(req: Request.History): ActionResult {
+        val openResults = { launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://duckduckgo.com/?q=${Uri.encode(req.ask.subject)}"))); Unit }
+        if (req.ask.aspect == HistoryAspect.ON_THIS_DAY) {
+            val m = req.ask.month ?: java.time.LocalDate.now().monthValue
+            val d = req.ask.day ?: java.time.LocalDate.now().dayOfMonth
+            val events = History.onThisDay(m, d)
+            if (events.isEmpty()) return ActionResult("I couldn't reach Wikipedia's on this day list.")
+            val dayName = java.time.LocalDate.of(2000, m, d).format(java.time.format.DateTimeFormatter.ofPattern("MMMM d", java.util.Locale.US))
+            val today = m == java.time.LocalDate.now().monthValue && d == java.time.LocalDate.now().dayOfMonth
+            val line = History.spread(events).first().let { e -> (if (today) "On this day in ${e.year}: " else "On $dayName, ${e.year}: ") + Sports.brief(e.text, 110) }
+            val rows = events.take(12).flatMap { e -> Box.wrap(e.text, "${e.year}: ".padEnd(7), indent = 7, max = 4) + "" }.dropLast(1) + listOf("", Box.kv("SOURCE", "Wikipedia"))
+            val page = "https://en.m.wikipedia.org/wiki/${java.time.LocalDate.of(2000, m, d).format(java.time.format.DateTimeFormatter.ofPattern("MMMM_d", java.util.Locale.US))}"
+            return ActionResult(line, readout = Readout(Box.build("ON THIS DAY: ${dayName.uppercase(java.util.Locale.US)}", rows),
+                controls = listOf(Control.Button("Wikipedia") { launch(Intent(Intent.ACTION_VIEW, Uri.parse(page))) })))
+        }
+        val r = History.find(req.ask) ?: return search(Request.Search(req.ask.subject))
+        return lookupResult(Request.Search(req.ask.subject), r, openResults)
+    }
+
+    /** An animal's lifespan, diet, habitat, prey, predators, discovery or extinction; an ordinary search when it isn't one. */
+    private suspend fun animal(req: Request.Animal): ActionResult {
+        val said = "${req.ask.animal} ${req.ask.want.name.lowercase().replace('_', ' ')}"
+        val openResults = { launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://duckduckgo.com/?q=${Uri.encode(said)}"))); Unit }
+        val r = runCatching { Animals.find(req.ask) }.getOrNull() ?: return search(Request.Search(req.ask.said))
+        return lookupResult(Request.Search(Animals.singular(req.ask.animal)), r, openResults)
+    }
+
+    /** A character's traits or part in the story; a web search when Brick can't place them. */
+    private suspend fun character(req: Request.Character): ActionResult {
+        val openResults = { launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://duckduckgo.com/?q=${Uri.encode(req.ask.said)}"))); Unit }
+        val r = Characters.find(req.ask) ?: return search(Request.Search(req.ask.said))
+        return lookupResult(Request.Search(req.ask.name), r, openResults)
+    }
+
     /** A looked-up person, movie, show, platform...: the fact you asked for, or the summary, with its card. */
     private fun lookupResult(req: Request.Search, r: LookupResult, openBrowser: () -> Unit): ActionResult {
         val openPage = { launch(Intent(Intent.ACTION_VIEW, Uri.parse(r.url))); Unit }
         val said = r.answer ?: r.summary
         val line = if (req.explicit) "Here's what I found on ${r.title}. $said" else said
-        return ActionResult(line, readout = info.lookup(r, openPage, openBrowser))
+        val openLink: (String) -> Unit = { u -> launch(Intent(Intent.ACTION_VIEW, Uri.parse(u))) }
+        return ActionResult(line, readout = info.lookup(r, openPage, openBrowser, openLink))
     }
 
     // ---------------------------------------------------------------- ratings, where to watch / buy / listen, credits
 
     private fun country(): String = java.util.Locale.getDefault().country.takeIf { it.length == 2 } ?: "US"
+
+    // ---------------------------------------------------------------- news
+
+    private suspend fun news(req: Request.News): ActionResult {
+        val open: (String) -> Unit = { u -> launch(Intent(Intent.ACTION_VIEW, Uri.parse(u))) }
+        val items = News.fetch(req.topic, req.query, source = req.source)
+        val line = News.line(req.topic, req.query, items, req.source)
+        if (items.isEmpty()) return ActionResult(line)
+        val now = java.time.ZonedDateTime.now()
+        val rows = items.take(8).flatMapIndexed { i, h ->
+            val meta = listOfNotNull(h.source, News.ago(h.published, now)).joinToString(" · ")
+            Box.wrap(h.title, "${i + 1}. ", 3) + listOfNotNull(meta.ifEmpty { null }?.let { "   $it" }) + ""
+        }.dropLast(1)
+        val heading = (listOfNotNull(req.query ?: req.topic.label.takeUnless { req.source != null && req.topic == NewsTopic.TOP }, req.source?.name?.let { "from $it" })
+            .joinToString(" ")).uppercase(java.util.Locale.US)
+        val page = News.pageUrl(req.topic, req.query, req.source)
+        val controls = items.take(3).mapIndexed { i, h -> Control.Button("Open story ${i + 1}") { open(h.link) } } +
+            Control.Button("More on Google News") { open(page) }
+        return ActionResult(line, readout = Readout(Box.build("NEWS: $heading", rows), controls = controls))
+    }
+
+    // ---------------------------------------------------------------- good, so-so and bad movies, shows, songs and news
+
+    private suspend fun ranked(req: Request.Ranked): ActionResult {
+        val open: (String) -> Unit = { u -> launch(Intent(Intent.ACTION_VIEW, Uri.parse(u))) }
+        var filter = req.filter
+        val all: List<Rated> = when (req.kind) {
+            RankKind.MOVIE -> Ranked.movies(filter, settings.current.tmdbKey)
+            RankKind.SHOW -> Ranked.shows(filter)
+            RankKind.SONG -> Ranked.songs(filter).also { (name, _) -> if (name != null) filter = name }.second
+            RankKind.NEWS -> Ranked.news(filter, req.tier)
+            RankKind.GAME -> Works.rankedGames(filter, req.game ?: GameFilter()).also { (name, _) -> if (name != null) filter = name }.second
+            RankKind.BOOK -> Works.rankedBooks(filter).also { (name, _) -> if (name != null) filter = name }.second
+            RankKind.BOARD_GAME -> {
+                if (settings.current.bggToken.isBlank()) return ActionResult(
+                    "Board game ratings come from BoardGameGeek, which needs a free API token. Add one in Settings, under Games and books.")
+                Works.rankedBoardGames(filter, settings.current.bggToken).also { (name, _) -> if (name != null) filter = name }.second
+            }
+        }
+        // Without a series, studio or device, games come from each year's best-reviewed list: no so-so or bad ones there.
+        val broad = req.kind == RankKind.GAME && req.filter == null && req.game?.platforms.isNullOrEmpty()
+        if (broad && (req.tier == Tier.BAD || req.tier == Tier.MEDIOCRE) && all.none { it.tier == req.tier }) return ActionResult(
+            "For games in general I only have each year's best-reviewed ones, so I can't list ${req.tier.word} ones. Name a series, a studio or a console, like \"bad Sonic games\" or \"worst Wii games\".")
+        val line = Ranked.line(req.kind, req.tier, filter, all, req.count, req.game)
+        if (all.isEmpty()) return ActionResult(line)
+        val picked = Ranked.pick(req.kind, req.tier, all, req.count).ifEmpty {
+            // None in that tier: show the closest ones instead.
+            if (req.tier == Tier.BAD) all.sortedBy { it.score }.take(5) else all.sortedByDescending { it.score }.take(5)
+        }
+        val tag = mapOf(Tier.GOOD to "GOOD", Tier.MEDIOCRE to "SO-SO", Tier.BAD to "BAD")
+        val rows = picked.take(15).flatMapIndexed { i, r ->
+            // Movies and shows: "(2023)" by the title. Songs: the album (or artist) on a line of its own.
+            val head = Box.wrap(r.title + (r.sub?.takeIf { req.kind == RankKind.MOVIE || req.kind == RankKind.SHOW }?.let { " ($it)" } ?: ""), "${i + 1}. ", 3) +
+                listOfNotNull(r.sub?.takeIf { req.kind == RankKind.SONG }?.let { "   " + it.replace(Patterns.get("\\s*\\((?:deluxe|expanded|remastered|anniversary)[^)]*\\)", true), "").take(Box.W - 3) })
+            val meta = when (req.kind) {
+                RankKind.NEWS -> listOfNotNull(r.sub, if (req.tier == Tier.ALL) tag[r.tier] else null).joinToString("  ")
+                else -> Box.bar(Math.round(r.score / 10).toInt(), 10) + " " + r.shown + (if (req.tier == Tier.ALL || r.tier != req.tier) "  " + tag[r.tier] else "")
+            }
+            head + listOfNotNull(meta.ifEmpty { null }?.let { "   $it" }) + ""
+        } + Box.wrap(Ranked.basis(req.kind, all).replaceFirstChar { it.uppercase() } + ".", "", 0, 3)
+        val title = Ranked.heading(req.kind, req.tier, filter, req.game).uppercase(java.util.Locale.US).let { if (req.tier == Tier.ALL && req.kind != RankKind.NEWS) "RANKED: $it" else it }
+        val word = if (req.kind == RankKind.NEWS) "story " else ""
+        val controls = picked.take(3).mapIndexedNotNull { i, r -> r.link?.let { u -> Control.Button("Open $word${i + 1}") { open(u) } } }
+        return ActionResult(line, readout = Readout(Box.build(title, rows), controls = controls))
+    }
+
+    // ---------------------------------------------------------------- video games, board games and books
+
+    private suspend fun workAsk(req: Request.WorkAsk): ActionResult {
+        val open: (String) -> Unit = { u -> launch(Intent(Intent.ACTION_VIEW, Uri.parse(u))) }
+        val today = java.time.LocalDate.now()
+        val token = settings.current.bggToken
+        val kind = req.kind ?: Works.guessKind(req.title) ?: return when {
+            req.guess && req.ask == WorkAskKind.PLAY -> media(Request.MediaAsk(MediaAskKind.LISTEN, req.title))
+            // "Is the Batman on sale": not a game or book, so a movie or show (Apple's price there).
+            req.sale -> media(Request.MediaAsk(MediaAskKind.BUY_VIDEO, req.title))
+            else -> search(Request.Search(req.title))
+        }
+        // A series named rather than one game or book ("where can I buy zelda"): ask which, or take the newest.
+        if (!req.exact) {
+            val set = Works.set(req.title, kind, maker = false)
+            val out = set?.released(today).orEmpty()
+            // "The Legend of Zelda" names the series as much as its first game: still ask.
+            val namesOne = set != null && out.any { Franchise.core(it.title) == Franchise.core(req.title) && Franchise.core(it.title) != Franchise.core(set.name) }
+            if (set != null && out.size >= 2 && !namesOne) {
+                suspend fun go(w: Work, say: String) = said(say, workAsk(req.copy(title = w.title, kind = kind, exact = true)))
+                val newest = out.last()
+                if (req.newest || settings.current.assumeNewest) return go(newest, "Going with the newest, ${newest.title}. ")
+                val films = out.map { Film(it.title, it.date) }
+                val rows = out.reversed().take(20).mapIndexed { i, w -> "${(out.size - i).toString().padStart(2)}  ${w.title}" + (w.date?.let { " (${it.year})" } ?: "") }
+                return ActionResult(
+                    Works.whichLine(set, kind, out),
+                    readout = choicesBox("WHICH ONE", rows),
+                    confirm = Confirmation(
+                        noLine = "Okay.",
+                        onAnswer = { a -> Franchise.pickFilm(a, films)?.let { f -> go(out.first { it.title == f.title }, "") } },
+                        onYes = { go(newest, "The newest, then. ") },
+                    ),
+                )
+            }
+        }
+        val found = Works.find(req.title, kind, token) ?: return when {
+            req.guess && req.ask == WorkAskKind.PLAY -> media(Request.MediaAsk(MediaAskKind.LISTEN, req.title))
+            req.guess && req.sale -> media(Request.MediaAsk(MediaAskKind.BUY_VIDEO, req.title))
+            else -> ActionResult("I couldn't find a ${kind.one} called ${req.title}.")
+        }
+        // Today's prices (and sales) from every store Brick can check, all at once.
+        val w = when {
+            req.ask == WorkAskKind.RATING -> found
+            found.kind == WorkKind.GAME -> found.copy(prices = Prices.games(found))
+            found.kind == WorkKind.BOOK -> found.copy(prices = Prices.books(found.title, found.makers.firstOrNull()))
+            else -> found
+        }
+        if (req.sale && w.kind != WorkKind.BOARD_GAME) {
+            val shops = if (w.kind == WorkKind.GAME) Works.gameShops(w, BuyFormat.DIGITAL, false, req.platformIds) else Works.bookShops(w, BuyFormat.DIGITAL, false, false, false)
+            val checked = w.prices.filter { p -> shops.any { it.name == p.store } }
+            val unchecked = shops.filter { s -> s.name in setOf("PlayStation Store", "Kindle (Amazon)") }.map { Prices.theStore(it.name.substringBefore(" (")) }
+            val line = (Prices.saleLine(w.title, checked) ?: Prices.noSaleLine(w.title, checked)) +
+                (if (unchecked.isNotEmpty()) " I can't check ${unchecked.joinToString(" or ")} prices, so the card links there." else "")
+            return ActionResult(line, readout = Works.shopsCard("PRICES", w, shops, open))
+        }
+        return when (req.ask) {
+            WorkAskKind.RATING -> ActionResult(Works.ratingLine(w), readout = Works.ratingCard(w, open))
+            WorkAskKind.PLAY -> {
+                val shops = if (w.kind == WorkKind.GAME) Works.gameShops(w, req.format, req.used, req.platformIds) else Works.boardShops(w, req.used)
+                ActionResult(if (w.kind == WorkKind.GAME) Works.playLine(w, req.platform, req.platformIds) else Works.buyLine(w, shops),
+                    readout = Works.shopsCard("WHERE TO PLAY", w, shops, open))
+            }
+            WorkAskKind.READ, WorkAskKind.BUY -> {
+                val read = req.ask == WorkAskKind.READ
+                val shops = when (w.kind) {
+                    WorkKind.GAME -> Works.gameShops(w, req.format, req.used, req.platformIds)
+                    WorkKind.BOOK -> Works.bookShops(w, req.format, req.audio, req.used, read)
+                    WorkKind.BOARD_GAME -> Works.boardShops(w, req.used)
+                }
+                ActionResult(Works.buyLine(w, shops, read), readout = Works.shopsCard(if (read) "WHERE TO READ" else "WHERE TO BUY", w, shops, open))
+            }
+        }
+    }
+
+    /** Movies or TV seasons on sale at Apple TV, Prime Video, Fandango at Home or Google TV (CheapCharts watches them). */
+    private suspend fun videoDeals(req: Request.Deals, open: (String) -> Unit): ActionResult {
+        val tv = req.video == LookupKind.TV_SHOW
+        val storeName = Prices.VIDEO_STORES[req.store ?: "itunes"] ?: "Apple TV"
+        val genre = req.genre?.let { g ->
+            mapOf("ActionAdventure" to "action", "Comedy" to "comedy", "Docus" to "documentary", "Drama" to "drama", "Horror" to "horror", "Classical" to "classic",
+                "Romance" to "romance", "Independent" to "indie", "KidsFamily" to "family", "SciFiFantasy" to "sci-fi and fantasy", "Sport" to "sports",
+                "Thriller" to "thriller", "Western" to "western", "Anime" to "anime", "Musicals" to "musical")[g]
+        }
+        val years = req.years?.let { (a, b) -> when { a != null && b != null && a == b -> " from $a"; a != null && b != null -> " from $a to $b"; a != null -> " since $a"; b != null -> " before ${b + 1}"; else -> "" } } ?: ""
+        val under = req.under?.let { " under ${Prices.money(it)}" } ?: ""
+        val what = listOfNotNull(if (req.good) "well-reviewed" else null, genre, if (tv) "TV seasons" else "movies").joinToString(" ")
+        val list = runCatching { Prices.videoDeals(tv, req.store, req.under, req.good, req.genre, req.years) }.getOrDefault(emptyList())
+        if (list.isEmpty()) return ActionResult("I couldn't find $what$years on sale on $storeName$under right now.")
+        val top = list.take(10)
+        val rows = ArrayList<String>()
+        top.forEachIndexed { i, d ->
+            if (i > 0) rows += ""
+            rows += Box.wrap("${i + 1}. ${d.title}", "", 3, 2)
+            rows += "   ${Prices.money(d.price.now)}  -${d.price.off}%  save ${Prices.money(d.price.saved)}"
+            d.score?.let { rows += "   rated $it%" }
+        }
+        rows += ""
+        rows += Box.wrap("US prices on $storeName, from CheapCharts.", "", 0, 2)
+        // The card lists them; reading every sale out is too long.
+        val line = "I found ${top.size} $what$years on sale on $storeName$under. They're on the card above."
+        val controls = top.take(3).mapIndexedNotNull { i, d -> d.price.url?.let { u -> Control.Button("Open ${i + 1}") { open(u) } } }
+        return ActionResult(line, readout = Readout(Box.build("${listOfNotNull(genre, if (tv) "TV" else "movie").joinToString(" ").uppercase()} DEALS: ${storeName.uppercase()}", rows), controls = controls))
+    }
+
+    /** Games on sale now at the PC stores (CheapShark watches them); consoles get their own sales page. */
+    private suspend fun deals(req: Request.Deals): ActionResult {
+        val open: (String) -> Unit = { u -> launch(Intent(Intent.ACTION_VIEW, Uri.parse(u))) }
+        if (req.console != null) {
+            val (name, url) = when (req.console) {
+                "switch", "nintendo", "eshop" -> "Nintendo eShop" to "https://www.nintendo.com/us/store/sales-and-deals/"
+                "xbox" -> "Xbox Store" to "https://www.xbox.com/en-US/promotions/sales/sales-and-specials"
+                else -> "PlayStation Store" to "https://store.playstation.com/en-us/pages/deals"
+            }
+            return ActionResult("The ${name} doesn't share its sale list, so I can't read it out. I can check one game, though: ask something like \"is Hades on sale on ${if (name.startsWith("Nintendo")) "Switch" else if (name.startsWith("Xbox")) "Xbox" else "PS5"}\".",
+                readout = Readout(Box.build("${name.uppercase()} SALES", listOf("Opens the store's sales page.")), controls = listOf(Control.Button("Open sales") { open(url) })))
+        }
+        if (req.video != null) return videoDeals(req, open)
+        val list = Prices.deals(req.store, req.under, req.good)
+        val where = req.store?.let { s -> Prices.DEAL_STORES.keys.firstOrNull { it == s }?.let { k -> when (k) { "epic" -> "the Epic Games Store"; "gog" -> "GOG"; "humble" -> "the Humble Store"; "gmg" -> "Green Man Gaming"; "fanatical" -> "Fanatical"; else -> "Steam" } } }
+        val under = req.under?.let { " under ${Prices.money(it)}" } ?: ""
+        if (list.isEmpty()) return ActionResult("I couldn't find ${if (req.good) "well-reviewed " else ""}games on sale${where?.let { " on $it" } ?: ""}$under right now.")
+        val top = list.take(10)
+        val rows = ArrayList<String>()
+        top.forEachIndexed { i, d ->
+            if (i > 0) rows += ""
+            rows += Box.wrap("${i + 1}. ${d.title}", "", 3, 2)
+            rows += "   ${Prices.money(d.price.now)}  -${d.price.off}%  save ${Prices.money(d.price.saved)}"
+            rows += "   ${d.price.store}" + (d.score?.let { "  rated $it%" } ?: "")
+        }
+        rows += ""
+        rows += Box.wrap("US prices, checked just now through CheapShark.", "", 0, 2)
+        val heading = "${if (req.good) "GOOD " else ""}GAME DEALS" + (where?.let { " ON ${it.removePrefix("the ").uppercase()}" } ?: "") + under.uppercase()
+        // The card lists them; reading every sale out is too long.
+        val line = "I found ${top.size} ${if (req.good) "good " else ""}game deal${if (top.size == 1) "" else "s"}${where?.let { " on $it" } ?: ""}$under. They're on the card above."
+        val controls = top.take(3).mapIndexedNotNull { i, d -> d.price.url?.let { u -> Control.Button("Open ${i + 1}") { open(u) } } }
+        return ActionResult(line, readout = Readout(Box.build(heading, rows), controls = controls))
+    }
+
+    private suspend fun latestWork(req: Request.LatestWork): ActionResult {
+        val today = java.time.LocalDate.now()
+        val set = Works.set(req.name, req.kind) ?: return search(Request.Search("newest ${req.name} ${req.kind.one}"))
+        val rows = set.works.filter { it.date != null }.reversed().take(14).map { w ->
+            (w.date?.year?.toString() ?: "TBA").padEnd(6) + w.title + if (w.date?.isAfter(today) == true) "  [coming]" else ""
+        }
+        val head = (if (set.bySeries) "${set.name} ${req.kind.many}" else "${req.kind.many} by ${set.name}").uppercase(java.util.Locale.US)
+        return ActionResult(Works.latestLine(set, req.kind, req.next, today), readout = choicesBox(head, rows))
+    }
+
+    // ---------------------------------------------------------------- the newest movie in a series, a show's newest season
+
+    private suspend fun latest(req: Request.Latest): ActionResult {
+        val today = java.time.LocalDate.now()
+        if (req.kind == LookupKind.MOVIE) {
+            val films = Franchise.members(req.name, Franchise.films(req.name, settings.current.tmdbKey))
+            if (films.isEmpty()) return search(Request.Search("newest ${req.name} movie"))
+            val rows = films.reversed().take(12).map { f ->
+                (f.year?.toString() ?: "TBA").padEnd(6) + f.title + if (f.date?.isAfter(today) == true) "  [coming]" else ""
+            }
+            return ActionResult(Franchise.latestMovieLine(req.name, films, req.next, today),
+                readout = choicesBox("${Franchise.pretty(req.name).uppercase(java.util.Locale.US)} MOVIES", rows))
+        }
+        val show = Franchise.seasons(req.name)?.takeIf { it.seasons.isNotEmpty() }
+            ?: return search(Request.Search("newest season of ${req.name}"))
+        val fmt = java.time.format.DateTimeFormatter.ofPattern("MMM yyyy", java.util.Locale.US)
+        val rows = show.seasons.reversed().take(12).map { s ->
+            "S${s.number.toString().padEnd(3)}" + (s.premiere?.format(fmt) ?: "no date").padEnd(9) +
+                (s.episodes?.let { "  $it ep" } ?: "") + if (s.premiere?.isAfter(today) == true) "  [coming]" else ""
+        }
+        return ActionResult(Franchise.latestSeasonLine(show, req.next, today), readout = choicesBox(show.name.uppercase(java.util.Locale.US), rows))
+    }
+
+    /** [r] with [prefix] said first ("Going with the newest, ..."). */
+    private fun said(prefix: String, r: ActionResult) =
+        if (prefix.isEmpty()) r else ActionResult(prefix + r.robotLine, r.confirm, r.returnToCard, r.navigateTo, r.dictate, r.voice, r.display, r.readout, r.after)
+
+    /** The list a "which one?" question is about, as a readout. */
+    private fun choicesBox(title: String, rows: List<String>) = Readout(Box.build(title, rows.flatMap { Box.wrap(it, "", 4) }))
 
     private suspend fun media(req: Request.MediaAsk): ActionResult {
         val open: (String) -> Unit = { u -> launch(Intent(Intent.ACTION_VIEW, Uri.parse(u))) }
@@ -1342,14 +1815,83 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             MediaAskKind.RATING, MediaAskKind.WATCH, MediaAskKind.BUY_VIDEO -> {
                 val title = req.title ?: return ActionResult("Which movie or show?")
                 val key = settings.current.tmdbKey
-                val v = MediaGuide.video(title, req.video, key, country())
-                    ?: return if (req.kind == MediaAskKind.RATING && req.video == null) search(Request.Search(title)) else ActionResult("I couldn't find a movie or show called $title.")
-                return when (req.kind) {
+                val assume = settings.current.assumeNewest
+                val today = java.time.LocalDate.now()
+                // A series named rather than one movie ("where can I buy avengers"): ask which, or take the newest.
+                if (!req.exact && req.video != LookupKind.TV_SHOW && req.season == null) {
+                    val members = Franchise.members(title, Franchise.films(title, key))
+                    val out = members.filter { it.date != null && !it.date.isAfter(today) }
+                    // Only same-name movies (no sequels), and a show by exactly that name ("the bear"): it's the show.
+                    val show = req.video == null && members.none { it.collection || Franchise.sequelish(title, it.title) } &&
+                        Franchise.seasons(title)?.let { Franchise.core(it.name) == Franchise.core(title) } == true
+                    if (show) return media(req.copy(video = LookupKind.TV_SHOW))
+                    if (Franchise.isSeries(title, members) && out.size >= 2) {
+                        suspend fun go(f: Film, say: String) =
+                            said(say, media(req.copy(title = Franchise.lookupTitle(f, out), video = LookupKind.MOVIE, exact = true)))
+                        val newest = out.last()
+                        if (req.newest || assume) return go(newest, "Going with the newest, ${newest.title}. ")
+                        val rows = out.reversed().mapIndexed { i, f -> "${(out.size - i).toString().padStart(2)}  ${f.title}" + (f.year?.let { " ($it)" } ?: "") }
+                        return ActionResult(
+                            Franchise.whichMovie(title, out),
+                            readout = choicesBox("WHICH ONE", rows),
+                            confirm = Confirmation(
+                                noLine = "Okay.",
+                                onAnswer = { a -> Franchise.pickFilm(a, out)?.let { go(it, "") } },
+                                onYes = { go(newest, "The newest, then. ") },
+                            ),
+                        )
+                    }
+                }
+                var v = MediaGuide.video(title, req.video, key, country(), req.season?.takeIf { it > 0 })
+                    ?: return when {
+                        // Not a movie or show: maybe a game, board game or book ("where can I buy elden ring", "is dune good").
+                        (req.guess || req.kind == MediaAskKind.RATING && req.video == null) && Works.guessKind(title) != null -> workAsk(
+                            Request.WorkAsk(Works.guessKind(title), if (req.kind == MediaAskKind.RATING) WorkAskKind.RATING else WorkAskKind.BUY, title, req.format, newest = req.newest))
+                        // Not a game or book either: a song ("where can I buy blinding lights").
+                        req.guess && req.kind == MediaAskKind.BUY_VIDEO && MediaGuide.song(title, null) != null -> media(Request.MediaAsk(MediaAskKind.BUY_SONG, title))
+                        req.guess -> search(Request.Search("where can i buy $title"))
+                        req.kind == MediaAskKind.RATING && req.video == null -> search(Request.Search(title))
+                        else -> ActionResult("I couldn't find a movie or show called $title.")
+                    }
+                var season = req.season
+                var prefix = ""
+                // A show with several seasons, to buy: which season? (or the newest one)
+                if (v.kind == LookupKind.TV_SHOW && req.kind == MediaAskKind.BUY_VIDEO && (season == null || req.newest) && !req.exact) {
+                    val out = Franchise.seasons(v.title)?.released(today).orEmpty()
+                    when {
+                        out.isEmpty() -> {}
+                        req.newest || assume && out.size >= 2 -> { season = out.last().number; prefix = "Going with the newest season, season $season. " }
+                        out.size >= 2 -> {
+                            val show = Franchise.seasons(v.title)!!
+                            val rows = out.map { s -> "S${s.number.toString().padEnd(3)}" + (s.premiere?.let { " ${it.year}" } ?: "") + (s.episodes?.let { "  $it episodes" } ?: "") }
+                            return ActionResult(
+                                Franchise.whichSeason(show, today),
+                                readout = choicesBox("WHICH SEASON", rows + "ALL  every season"),
+                                confirm = Confirmation(
+                                    noLine = "Okay.",
+                                    onAnswer = { a -> Franchise.pickSeason(a, out.size)?.let { n -> media(req.copy(title = v.title, video = LookupKind.TV_SHOW, season = n, exact = true)) } },
+                                    onYes = { media(req.copy(title = v.title, video = LookupKind.TV_SHOW, season = out.last().number, exact = true)) },
+                                ),
+                            )
+                        }
+                    }
+                    if (season != null && season > 0) v = MediaGuide.video(v.title, LookupKind.TV_SHOW, key, country(), season) ?: v
+                }
+                // Buying: each store's price and sale from CheapCharts (movies, or one season of a show).
+                if (req.kind == MediaAskKind.BUY_VIDEO && !req.rent && (v.kind != LookupKind.TV_SHOW || v.apple?.seasonNumber != null)) {
+                    val p = runCatching { Prices.videos(v.title, v.year, v.kind == LookupKind.TV_SHOW, v.apple?.url) }.getOrNull()
+                    if (p != null) v = v.copy(prices = p.prices, lowest = p.lowest, chartsPage = p.page)
+                }
+                // The answer names the season ("season 2 of The Bear", "every season of The Bear").
+                if (v.kind == LookupKind.TV_SHOW && req.kind == MediaAskKind.BUY_VIDEO && season != null) {
+                    v = v.copy(title = if (season == 0) "Every season of ${v.title}" else "Season $season of ${v.title}")
+                }
+                return said(prefix, when (req.kind) {
                     MediaAskKind.RATING -> ActionResult(MediaGuide.ratingLine(v), readout = MediaCards.rating(v, open))
                     MediaAskKind.WATCH -> ActionResult(MediaGuide.watchLine(v, req.free), readout = MediaCards.watch(v, req.free, key.isBlank(), open))
                     else -> ActionResult(MediaGuide.buyVideoLine(v, req.format, req.rent),
                         readout = MediaCards.buyVideo(v, MediaGuide.videoStores(v, req.format), req.rent, open))
-                }
+                })
             }
             else -> {
                 val playing = if (req.title == null) com.brick.assistant.media.LikeSong.current(context) else null
@@ -1519,9 +2061,44 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             }
             is Request.ReadNotifications -> if (req.email) "read.email" else "read.notifications"
             is Request.ReadCalendar -> "read.calendar"
-            is Request.Search -> Lookup.understand(req.query).kind?.let { "search.${it.name.lowercase()}" }
-                ?: if (req.explicit) "search.web" else "search.question"
+            is Request.Search -> Lookup.understand(req.query).let { lq ->
+                val byKind = lq.kind?.let { "search.${it.name.lowercase()}" } ?: if (req.explicit) "search.web" else "search.question"
+                when (lq.aspect) {
+                    LookupAspect.AWARDS -> known("search.awards", byKind)
+                    LookupAspect.CHARACTERS -> known("search.characters", byKind)
+                    LookupAspect.CAST, LookupAspect.ROLE -> known("search.cast", byKind)
+                    LookupAspect.RUNTIME -> known("search.length", byKind)
+                    LookupAspect.CONTROVERSY -> known("search.controversy", byKind)
+                    else -> byKind
+                }
+            }
+            is Request.Sports -> known("search.sports.${req.ask.want.name.lowercase()}", "search.sports")
+            is Request.History -> known("search.history", "search.question")
+            is Request.Character -> known("search.character", "search.characters")
+            is Request.Animal -> when {
+                req.ask.plant -> known("search.plant", "search.animal")
+                req.ask.bug -> known("search.bug", "search.animal")
+                req.ask.sea -> known("search.sea", "search.animal")
+                else -> known("search.animal", "search.question")
+            }
             is Request.Spell -> "search.spell"
+            is Request.News -> known("search.news.${req.topic.name.lowercase()}", "search.news")
+            is Request.Ranked -> known("search.ranked.${req.kind.name.lowercase()}", "search.ranked")
+            is Request.WorkAsk -> when {
+                req.sale -> "media.sale"
+                req.ask == WorkAskKind.RATING -> known("media.rating.${req.kind?.name?.lowercase()}", "media.rating")
+                req.ask == WorkAskKind.BUY -> known("media.buy.${req.kind?.name?.lowercase()}", "media.buy")
+                req.ask == WorkAskKind.PLAY -> "media.play"
+                else -> "media.read"
+            }
+            is Request.LatestWork -> known("search.latest.${req.kind.name.lowercase()}", "search.latest")
+            is Request.Deals -> when {
+                req.console != null -> "search.deals.console"
+                req.video == LookupKind.TV_SHOW -> "search.deals.tv"
+                req.video != null -> "search.deals.movies"
+                else -> "search.deals.games"
+            }
+            is Request.Latest -> known("search.latest.${req.kind.name.lowercase()}", "search.latest")
             is Request.MediaAsk -> when (req.kind) {
                 MediaAskKind.RATING -> "media.rating"
                 MediaAskKind.WATCH -> "media.watch"
@@ -1551,9 +2128,21 @@ class Actions(private val context: Context, private val settings: SettingsStore)
                 DeviceOp.BRIGHT_UP, DeviceOp.BRIGHT_DOWN, DeviceOp.BRIGHT_SET -> "device.brightness"
                 DeviceOp.WIFI, DeviceOp.BLUETOOTH -> "device.connections"
             }
-            is Request.PhoneSettingReq -> if (req.ask == SettingAsk.WHERE) "device.settings.where" else "device.settings"
+            is Request.PhoneSettingReq -> when {
+                req.ask == SettingAsk.WHERE -> "device.settings.where"
+                req.ask == SettingAsk.STATUS && !req.open && req.setting != null -> "device.settings.status"
+                else -> "device.settings.switch"
+            }
+            is Request.SettingsPageReq -> if (req.where) "device.settings.where" else "device.settings.page"
+            is Request.ScreenTimeoutReq -> when {
+                req.ask == SettingAsk.WHERE -> "device.settings.where"
+                req.ask == SettingAsk.STATUS && !req.open -> "device.settings.status"
+                else -> "device.settings.timeout"
+            }
+            is Request.AppSettingsReq -> "device.settings.app"
             is Request.SmartHome -> "device.smarthome"
             is Request.PlaceHours -> "maps.hours"
+            is Request.PlaceNumber -> "maps.phone"
             is Request.PhotoSpots -> "maps.photos"
             is Request.Sky -> when {
                 req.worldwide -> "sky.darkest.world"
@@ -1581,6 +2170,9 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         }
         return chain + cat.name
     }
+
+    /** [key] when it's a response pool, else [fallback] (so a kind without its own pool still gets its parent's). */
+    private fun known(key: String, fallback: String) = if (com.brick.assistant.data.ResponseRules.get(key) != null) key else fallback
 
     private fun defaultMapsPackage(): String? = try {
         context.packageManager.resolveActivity(
@@ -1679,7 +2271,7 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         if (doc.instrumental) return@withContext ActionResult("$title$who is an instrumental, so there are no lyrics.")
         val c = playing?.controller
         // The song playing now is still the one these lyrics are for (same title, and artist when both say).
-        fun key(s: String?) = s?.let { Lyrics.cleanTitle(it) }?.lowercase()?.replace(Regex("[^\\p{L}\\p{N}]+"), "")?.ifEmpty { null }
+        fun key(s: String?) = s?.let { Lyrics.cleanTitle(it) }?.lowercase()?.replace(Patterns.get("[^\\p{L}\\p{N}]+"), "")?.ifEmpty { null }
         val sameSong: () -> Boolean = {
             val now = com.brick.assistant.media.LikeSong.current(context)
             val t = key(now?.title)

@@ -11,7 +11,8 @@ import java.util.Locale
 import kotlin.math.roundToInt
 
 /** Which part of the weather the user asked about. */
-enum class WeatherAspect { GENERAL, TEMPERATURE, HUMIDITY, UV, WIND, RAIN_CHANCE, RAIN_AMOUNT, SNOW_CHANCE, SNOW_AMOUNT }
+/** [HIGH_LOW] is the day's high and low ("what's the high and low today"); [TEMPERATURE] is how warm it is now. */
+enum class WeatherAspect { GENERAL, TEMPERATURE, HIGH_LOW, HUMIDITY, UV, WIND, RAIN_CHANCE, RAIN_AMOUNT, SNOW_CHANCE, SNOW_AMOUNT }
 
 /** One day, or the week ahead ([WEEK], 7 days from today), or the coming Saturday and Sunday ([WEEKEND]). */
 enum class WeatherSpan { DAY, WEEK, WEEKEND }
@@ -386,7 +387,7 @@ object WeatherSource {
         return when (aspect) {
             WeatherAspect.RAIN_CHANCE, WeatherAspect.RAIN_AMOUNT -> chances({ it.rainChance }, "rain")
             WeatherAspect.SNOW_CHANCE, WeatherAspect.SNOW_AMOUNT -> chances({ it.snowChance }, "snow")
-            WeatherAspect.TEMPERATURE -> {
+            WeatherAspect.TEMPERATURE, WeatherAspect.HIGH_LOW -> {
                 val withHigh = days.filter { it.high != null }
                 val warm = withHigh.maxByOrNull { it.high!! }
                 val cold = days.filter { it.low != null }.minByOrNull { it.low!! }
@@ -446,6 +447,8 @@ object WeatherSource {
             WeatherAspect.TEMPERATURE ->
                 if (w.tomorrow || w.temp == null) cap("high of ${w.high}, low of ${w.low}$tmr.")
                 else cap("${w.temp} degrees.")
+            WeatherAspect.HIGH_LOW ->
+                cap("high of ${w.high}, low of ${w.low}$tmr" + if (!w.tomorrow && w.temp != null) ". It's ${w.temp} degrees now." else ".")
             WeatherAspect.HUMIDITY -> w.humidity?.let { cap("$it percent humidity$tmr.") } ?: cap("no humidity reading$tmr.")
             WeatherAspect.UV -> w.uvIndex?.let {
                 val level = when {

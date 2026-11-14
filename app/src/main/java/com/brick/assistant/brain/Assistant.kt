@@ -38,10 +38,10 @@ class Assistant(
     val awaitingConfirmation: Boolean
         get() = pending?.let { System.currentTimeMillis() - it.second < CONFIRM_WINDOW_MS } == true
 
-    private val yes = Regex("^(?:yes|yeah|yep|yup|yea|sure|ok|okay|send it|send|do it|go ahead|confirm|please do|please|absolutely|correct|that's right|another|another one|next|next one|show me another|show me|one more|definitely|of course)\\b.*", RegexOption.IGNORE_CASE)
-    private val no = Regex("^(?:no|nope|nah|cancel|don't|do not|stop|never mind|nevermind|wait|hold on|that's it|that's all|that's good|i'm good|i'm done|this one|that one|all good)\\b.*", RegexOption.IGNORE_CASE)
+    private val yes = Patterns.get("^(?:yes|yeah|yep|yup|yea|sure|ok|okay|send it|send|do it|go ahead|confirm|please do|please|absolutely|correct|that's right|another|another one|next|next one|show me another|show me|one more|definitely|of course)\\b.*", true)
+    private val no = Patterns.get("^(?:no|nope|nah|cancel|don't|do not|stop|never mind|nevermind|wait|hold on|that's it|that's all|that's good|i'm good|i'm done|this one|that one|all good)\\b.*", true)
 
-    private val next = Regex("^(?:next|another|another one|skip|show me another|the next one|next one|one more|a different one)\\b.*", RegexOption.IGNORE_CASE)
+    private val next = Patterns.get("^(?:next|another|another one|skip|show me another|the next one|next one|one more|a different one)\\b.*", true)
 
     /** Plays the bottom animation in an app's colors (set by the app; respects the setting). */
     @Volatile var onBrand: ((com.brick.assistant.overlay.Brand) -> Unit)? = null
@@ -96,6 +96,16 @@ class Assistant(
 
     /** [topic]: a one-purpose request from Battery ("Spotify: say a song"); what you said is read for that topic. */
     suspend fun handle(input: String, topic: Topic? = null, onEvent: (LogEntry) -> Unit) {
+        // Brick History (when installed) keeps a copy of the request and everything Brick answered, filed by topic.
+        // An answer to Brick's question ("yes", a note's text) stays with the request it answers.
+        val now = System.currentTimeMillis()
+        val follow = pendingDictation?.let { now - it.second < CONFIRM_WINDOW_MS } == true ||
+            pending?.let { now - it.second < CONFIRM_WINDOW_MS } == true
+        val saved = HistoryLink.turn(input, if (follow) null else runCatching { topic?.request(input) ?: IntentParser.parse(input) }.getOrNull(), follow)
+        turn(input, topic) { e -> onEvent(saved?.invoke(e) ?: e) }
+    }
+
+    private suspend fun turn(input: String, topic: Topic? = null, onEvent: (LogEntry) -> Unit) {
         returnToCardUntil = 0L
         // Dictation in progress: what you said is the note itself.
         val d = pendingDictation?.takeIf { System.currentTimeMillis() - it.second < CONFIRM_WINDOW_MS }
@@ -110,7 +120,7 @@ class Assistant(
             // A question with its own answers ("Which one?"): a name or "all" goes to it first.
             p.first.onAnswer?.let { f -> f(answer)?.let { robotOnly(it, onEvent); return } }
             when {
-                p.first.retry != null && yes.matches(answer) -> { handle(p.first.retry!!, onEvent = onEvent); return }
+                p.first.retry != null && yes.matches(answer) -> { turn(p.first.retry!!, onEvent = onEvent); return }
                 onNext != null && next.matches(answer) -> { robotOnly(onNext(), onEvent); return }
                 yes.matches(answer) -> { robotOnly(p.first.onYes(), onEvent); return }
                 no.matches(answer) -> { robotOnly(ActionResult(p.first.noLine), onEvent); return }

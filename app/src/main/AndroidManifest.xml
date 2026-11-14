@@ -39,6 +39,8 @@
         <package android:name="com.lostf1sh.pixelplayeross.local" />
         <!-- Spotify: "play ... on Spotify". -->
         <package android:name="com.spotify.music" />
+        <!-- Brick History: keeps your chats and searches. -->
+        <package android:name="com.brick.history" />
         <!-- Optic, the edge visualizer: voice controls, and it steps aside while Brick is on screen. -->
         <package android:name="com.optic.island" />
         <intent>

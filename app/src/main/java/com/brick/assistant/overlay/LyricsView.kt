@@ -36,6 +36,14 @@ class LyricsView(context: Context) : View(context) {
     private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.1f * d }
     private val boxFill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val fade = Paint()
+    // Reused every frame instead of allocated: the current line's box and the two edge fades (rebuilt only when
+    // their size, place or color changes).
+    private val boxRect = RectF()
+    private var topFade: LinearGradient? = null
+    private var bottomFade: LinearGradient? = null
+    private var fadeF = -1f
+    private var fadeEdge = 0
+    private var fadeH = -1
 
     private var panel: LyricsPanel? = null
     private var lines: List<LyricLine> = emptyList()
@@ -218,7 +226,7 @@ class LyricsView(context: Context) : View(context) {
             var y = it.top + inset
             if (it.grow > 0.02f) {
                 // The outlined box Driver draws around the line playing now (fading in and out with its size).
-                val r = RectF(1 * d, it.top, width - 1 * d, it.top + it.height)
+                val r = boxRect.apply { set(1 * d, it.top, width - 1 * d, it.top + it.height) }
                 boxFill.color = ViewColors.alpha(brick, (26 * it.grow).roundToInt())
                 canvas.drawRoundRect(r, 4 * d, 4 * d, boxFill)
                 boxPaint.color = ViewColors.alpha(brick, (150 * it.grow).roundToInt())
@@ -289,9 +297,15 @@ class LyricsView(context: Context) : View(context) {
         // Soft fade at the top and bottom edges into the card.
         val f = (if (fullScreen) 28 else 16) * d
         val edge = if (fullScreen) ViewColors.background else ViewColors.panel
-        fade.shader = LinearGradient(0f, 0f, 0f, f, edge, ViewColors.alpha(edge, 0), Shader.TileMode.CLAMP)
+
+        if (f != fadeF || edge != fadeEdge || height != fadeH || topFade == null) {
+            fadeF = f; fadeEdge = edge; fadeH = height
+            topFade = LinearGradient(0f, 0f, 0f, f, edge, ViewColors.alpha(edge, 0), Shader.TileMode.CLAMP)
+            bottomFade = LinearGradient(0f, height - f, 0f, height.toFloat(), ViewColors.alpha(edge, 0), edge, Shader.TileMode.CLAMP)
+        }
+        fade.shader = topFade
         if (scroll > 1f) canvas.drawRect(0f, 0f, width.toFloat(), f, fade)
-        fade.shader = LinearGradient(0f, height - f, 0f, height.toFloat(), ViewColors.alpha(edge, 0), edge, Shader.TileMode.CLAMP)
+        fade.shader = bottomFade
         if (scroll < maxScroll - 1f) canvas.drawRect(0f, height - f, width.toFloat(), height.toFloat(), fade)
 
         // Every screen refresh while anything moves (the song playing, a glide, a drag or fling, the box resizing);

@@ -41,13 +41,13 @@ object MathEvaluator {
 
         var e = " " + human.lowercase() + " "
         e = e.replace("×", "*").replace("÷", "/").replace("−", "-").replace("% of", "/100*").replace("%", "/100")
-        e = e.replace(Regex("(?<=\\d)\\s*x\\s*(?=\\d)"), "*")
-        e = e.replace(Regex("\\bthe\\b"), " ").replace(Regex("\\s+"), " ")
+        e = e.replace(Patterns.get("(?<=\\d)\\s*x\\s*(?=\\d)"), "*")
+        e = e.replace(Patterns.get("\\bthe\\b"), " ").replace(Patterns.get("\\s+"), " ")
         for ((word, sym) in replacements) {
             e = e.replace(Regex("\\b${Regex.escape(word)}\\b"), sym)
         }
-        e = e.replace(Regex("\\b(?:of|is|by)\\b"), " ")
-        e = e.replace(Regex("\\bpi\\b"), " pi ").replace(Regex("\\s+"), " ").trim()
+        e = e.replace(Patterns.get("\\b(?:of|is|by)\\b"), " ")
+        e = e.replace(Patterns.get("\\bpi\\b"), " pi ").replace(Patterns.get("\\s+"), " ").trim()
 
         // Only allow math characters.
         val stripped = e.replace("sqrt", "").replace("pi", "")
@@ -66,9 +66,9 @@ object MathEvaluator {
     private fun speakable(human: String): String = human
         .replace("+", " plus ").replace("*", " times ").replace("/", " divided by ")
         .replace("^", " to the power of ").replace("=", " ")
-        .replace(Regex("(?<=\\d)\\s*x\\s*(?=\\d)"), " times ")
-        .replace(Regex("(?<=\\d)\\s*-\\s*(?=\\d)"), " minus ")
-        .replace(Regex("\\s+"), " ").trim()
+        .replace(Patterns.get("(?<=\\d)\\s*x\\s*(?=\\d)"), " times ")
+        .replace(Patterns.get("(?<=\\d)\\s*-\\s*(?=\\d)"), " minus ")
+        .replace(Patterns.get("\\s+"), " ").trim()
 
     fun format(v: Double): String {
         if (v.isNaN() || v.isInfinite()) return "undefined"
@@ -85,8 +85,8 @@ object MathEvaluator {
 
     /** The equation in symbols: "12 x 8 + 3", "sqrt 144". */
     private fun pretty(e: String): String = e.replace("*", " x ").replace("/", " / ").replace("+", " + ")
-        .replace(Regex("(?<=[\\d)])\\s*-\\s*"), " - ").replace("#", " mod ").replace("^", "^")
-        .replace("sqrt", "sqrt ").replace(Regex("\\s+"), " ").trim()
+        .replace(Patterns.get("(?<=[\\d)])\\s*-\\s*"), " - ").replace("#", " mod ").replace("^", "^")
+        .replace("sqrt", "sqrt ").replace(Patterns.get("\\s+"), " ").trim()
 
     private class Parser(val s: String) {
         var i = 0

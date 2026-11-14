@@ -1,5 +1,7 @@
 package com.brick.assistant.data
 
+import com.brick.assistant.brain.Patterns
+
 import android.content.Context
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -57,7 +59,7 @@ data class Palette(
         /** "#4DD0E1", "4dd0e1" or "#FF4DD0E1" -> opaque ARGB, or null. */
         fun parseHex(s: String): Int? {
             val h = s.trim().removePrefix("#")
-            if (!Regex("^[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$").matches(h)) return null
+            if (!Patterns.get("^[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$").matches(h)) return null
             val v = h.toLong(16)
             return if (h.length == 6) (0xFF000000 or v).toInt() else (0xFF000000 or (v and 0xFFFFFF)).toInt()
         }

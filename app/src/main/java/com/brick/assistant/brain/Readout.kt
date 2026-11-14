@@ -19,6 +19,16 @@ class Readout(
     val lyrics: LyricsPanel? = null,
 )
 
+/**
+ * How a run of [n] buttons splits into rows of at most three, as evenly as it can (4 is 2+2, 5 is 3+2, 7 is 3+2+2),
+ * so every row fills the card and no button sits alone at a third of the width.
+ */
+fun buttonRows(n: Int): List<Int> {
+    if (n <= 0) return emptyList()
+    val rows = (n + 2) / 3
+    return List(rows) { i -> n / rows + if (i < n % rows) 1 else 0 }
+}
+
 /** A live control on a readout. Each reads its current value when drawn, so it shows the real state. */
 sealed class Control(val label: String) {
     class Toggle(label: String, val get: () -> Boolean, val set: (Boolean) -> Unit) : Control(label)
@@ -46,7 +56,7 @@ sealed class Control(val label: String) {
  * Row labels are short capitals (drawn in the unit's color), bars are "[###...]" (filled in Brick's color).
  */
 object Box {
-    private val MARKS = Regex("\\p{M}+")
+    private val MARKS = Patterns.get("\\p{M}+")
 
     /** Inner width in characters: as many as fit the card at the readout's text size (see [fit]); 32 until measured. */
     @Volatile var W = SkyQuality.PANEL_WIDTH

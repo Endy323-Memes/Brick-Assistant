@@ -88,9 +88,15 @@ fun ReadoutView(initial: Readout) {
                     when (val c = list[i]) {
                         is Control.Button -> {
                             val run = ArrayList<Control.Button>()
-                            while (i < list.size && list[i] is Control.Button && run.size < 3) { run += list[i] as Control.Button; i++ }
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                for (b in run) TermButton(b.label, Modifier.weight(1f)) { b.run(); changed() }
+                            while (i < list.size && list[i] is Control.Button) { run += list[i] as Control.Button; i++ }
+                            // Spread evenly over rows that each fill the width (4 buttons: two rows of two).
+                            var at = 0
+                            for (size in com.brick.assistant.brain.buttonRows(run.size)) {
+                                val part = run.subList(at, at + size)
+                                at += size
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    for (b in part) TermButton(b.label, Modifier.weight(1f)) { b.run(); changed() }
+                                }
                             }
                             continue
                         }

@@ -1,5 +1,7 @@
 package com.brick.assistant.media
 
+import com.brick.assistant.brain.Patterns
+
 import android.content.ComponentName
 import android.content.Context
 import android.media.MediaMetadata
@@ -44,8 +46,8 @@ object LikeSong {
         )
     }
 
-    private val likeWords = Regex("(?i)\\b(like|love|heart|favou?rite|thumbs? up|save|add to (?:liked|library|collection|your))\\b")
-    private val unlikeWords = Regex("(?i)\\b(unlike|dislike|remove|un-?heart|unfavou?rite|thumbs? down|unsave|not interested)\\b")
+    private val likeWords = Patterns.get("(?i)\\b(like|love|heart|favou?rite|thumbs? up|save|add to (?:liked|library|collection|your))\\b")
+    private val unlikeWords = Patterns.get("(?i)\\b(unlike|dislike|remove|un-?heart|unfavou?rite|thumbs? down|unsave|not interested)\\b")
 
     /** The app's own "like" button in its media controls, if it has one. */
     private fun pressLikeButton(p: Playing): Boolean {

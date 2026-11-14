@@ -66,13 +66,13 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
         maskFilter = android.graphics.BlurMaskFilter(14 * resources.displayMetrics.density, android.graphics.BlurMaskFilter.Blur.NORMAL)
     }
     private val radius = 6 * d
-    private val pad = 16 * d
-    private val headerH = 34 * d
+    private val pad = 14 * d
+    private val headerH = 30 * d
 
     private val header = text(12.5f, textHigh, bold = true)
     private val status = text(11.5f, blue, bold = true)
     private val history = text(13f, textMid).apply { maxLines = 2; ellipsize = TextUtils.TruncateAt.END }
-    private val main = text(16f, textHigh)
+    private val main = text(14.5f, textHigh)
 
     /**
      * The answer, in a box that never grows past [MAIN_LINES] lines: longer answers scroll instead, following
@@ -81,7 +81,10 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
     private val mainScroll = object : android.widget.ScrollView(context) {
         override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
             val cap = main.lineHeight * MAIN_LINES + main.paddingTop + main.paddingBottom
-            super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(cap, MeasureSpec.AT_MOST))
+            // Shorter still when the card is short on room, so the buttons below stay on screen.
+            val mode = MeasureSpec.getMode(heightMeasureSpec)
+            val limit = if (mode == MeasureSpec.UNSPECIFIED) cap else min(cap, MeasureSpec.getSize(heightMeasureSpec))
+            super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(limit, if (mode == MeasureSpec.EXACTLY) MeasureSpec.EXACTLY else MeasureSpec.AT_MOST))
         }
     }.apply {
         isVerticalScrollBarEnabled = true
@@ -109,7 +112,7 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
     var onTyped: ((String) -> Unit)? = null
 
     private val input = android.widget.EditText(context).apply {
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14.5f)
         setTextColor(textHigh)
         setHintTextColor(ViewColors.mix(textMid, ViewColors.background, 0.35f))
         hint = "type to brick…"
@@ -141,6 +144,22 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
         text = "[ ⌨ type ]"
         setPadding(0, (4 * d).toInt(), (12 * d).toInt(), (4 * d).toInt())
         setOnClickListener { if (typing) stopTyping() else startTyping() }
+    }
+
+    /** Tapped "Talk to Brick" (while Brick speaks or after): stop talking and listen for another request. */
+    var onAskAgain: (() -> Unit)? = null
+
+    /** Shown from the moment Brick starts answering (not while listening, thinking or typing). */
+    private val askButton = text(12.5f, amber, bold = true).apply {
+        text = "[ 🎙 Talk to Brick ]"
+        setPadding(0, (4 * d).toInt(), (12 * d).toInt(), (4 * d).toInt())
+        visibility = View.GONE
+        setOnClickListener { setAskAgain(false); onAskAgain?.invoke() }
+    }
+
+    /** Shows or hides the "Talk to Brick" button. */
+    override fun setAskAgain(visible: Boolean) {
+        askButton.visibility = if (visible && !typing) View.VISIBLE else View.GONE
     }
 
     /** Muted voices (the mute button): Brick's and/or the unit's. Lines still show as text. */
@@ -187,6 +206,7 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
     fun startTyping() {
         if (typing) return
         typing = true
+        askButton.visibility = View.GONE
         typeRow.visibility = View.VISIBLE
         typeButton.text = "[ 🎙 talk ]"
         onStartTyping?.invoke()
@@ -223,7 +243,7 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
         val p = pad.toInt()
         val content = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(p, 0, p, p)
+            setPadding(p, 0, p, (p * 0.6f).toInt())
         }
         val top = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -233,8 +253,9 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
             addView(status)
         }
         content.addView(top)
-        content.addView(history, LinearLayout.LayoutParams(-1, -2).apply { topMargin = (14 * d).toInt() })
-        content.addView(mainScroll, LinearLayout.LayoutParams(-1, -2).apply { topMargin = (6 * d).toInt() })
+        content.addView(history, LinearLayout.LayoutParams(-1, -2).apply { topMargin = (8 * d).toInt() })
+        // The answer gives up room first (it scrolls) when the card is short, so the type box and buttons never get cut off.
+        content.addView(mainScroll, LinearLayout.LayoutParams(-1, -2, 1f).apply { topMargin = (4 * d).toInt() })
         @SuppressLint("ClickableViewAccessibility")
         mainScroll.setOnTouchListener { _, e ->
             // Your finger takes over from the auto-scroll; a plain tap still works like tapping the card.
@@ -251,6 +272,7 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
         val bottom = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            addView(askButton)
             addView(typeButton)
             addView(muteButton)
         }
@@ -509,7 +531,7 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
 
     companion object {
         /** The answer box shows at most this many lines (the card's usual size); longer answers scroll. */
-        const val MAIN_LINES = 5
+        const val MAIN_LINES = 4
         /** About how fast Brick and the unit speak (and how fast you read): paces the auto-scroll. */
         const val CHARS_PER_SECOND = 14f
         /** Redraws a second while the card is idle (see [idle]). */

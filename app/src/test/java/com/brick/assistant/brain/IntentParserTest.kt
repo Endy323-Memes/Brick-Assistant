@@ -5,6 +5,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class IntentParserTest {
+    @Test fun duckDuckGoIsASearchWord() {
+        for (said in listOf("duckduckgo how tall is the eiffel tower", "duck duck go how tall is the eiffel tower", "search duckduckgo for how tall is the eiffel tower")) {
+            val r = IntentParser.parse(said)
+            assertTrue("$said -> $r", r is Request.Search && r.explicit && r.query == "how tall is the eiffel tower")
+        }
+    }
+
 
     private inline fun <reified T> parse(s: String): T {
         val r = IntentParser.parse(s)

@@ -38,10 +38,10 @@ data class BtDevice(val name: String, val kind: BtKind, val level: Int)
 
 /** Picks which connected Bluetooth devices a battery question is about, and words the answer. */
 object BtBattery {
-    private val watchName = Regex("watch|gear s|fitbit|garmin|amazfit|band", RegexOption.IGNORE_CASE)
-    private val headphoneName = Regex("buds|pods|headphone|headset|earbud|earphone|wh-|wf-|beats|bose|jabra|sennheiser|soundcore|\\bqc", RegexOption.IGNORE_CASE)
-    private val speakerName = Regex("speaker|jbl|soundlink|boom|flip|bravia|soundbar|sonos|echo", RegexOption.IGNORE_CASE)
-    private val controllerName = Regex("controller|xbox|dualsense|dualshock|joy-?con|gamepad|8bitdo", RegexOption.IGNORE_CASE)
+    private val watchName = Patterns.get("watch|gear s|fitbit|garmin|amazfit|band", true)
+    private val headphoneName = Patterns.get("buds|pods|headphone|headset|earbud|earphone|wh-|wf-|beats|bose|jabra|sennheiser|soundcore|\\bqc", true)
+    private val speakerName = Patterns.get("speaker|jbl|soundlink|boom|flip|bravia|soundbar|sonos|echo", true)
+    private val controllerName = Patterns.get("controller|xbox|dualsense|dualshock|joy-?con|gamepad|8bitdo", true)
 
     /** The kind from the name first (it's the most telling), then from the device's Bluetooth class. */
     fun kindOf(name: String, major: Int, deviceClass: Int): BtKind = when {

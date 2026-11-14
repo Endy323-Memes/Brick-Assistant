@@ -42,6 +42,15 @@ object WakeWordGate {
 
     @Synchronized fun hold() { holders++; paused = true }
     @Synchronized fun release() { holders = (holders - 1).coerceAtLeast(0); paused = holders > 0 }
+
+    /**
+     * The line Brick or the unit is saying right now, or null. "Hey Brick" can interrupt a line, except one that
+     * itself says "hey brick" (Brick's own voice mustn't set it off).
+     */
+    @Volatile var speaking: String? = null
+
+    fun mayTrigger(loose: Boolean = false): Boolean =
+        speaking?.contains(Regex(if (loose) "\\bbrick\\b" else "\\bhey,? brick\\b", RegexOption.IGNORE_CASE)) != true
 }
 
 /**
@@ -58,6 +67,11 @@ class WakeWordService : Service() {
         private const val SAMPLE_RATE = 16000
         private const val PHRASE = "hey brick"
         private const val MIN_CONFIDENCE = 0.6
+        private const val LOOSE_CONFIDENCE = 0.85
+        /** While Brick talks the model hears its voice and other sound too, so "hey brick" there must be surer. */
+        private const val TALK_CONFIDENCE = 0.8
+        /** The words listened for. */
+        private const val GRAMMAR = "[\"$PHRASE\", \"[unk]\"]"
         /** Below this battery level (and not charging), "Hey Brick" pauses when the setting is on. */
         private const val LOW_BATTERY = 15
 
@@ -68,30 +82,75 @@ class WakeWordService : Service() {
          * One 100 ms chunk of listening: the speech model only runs around sound (silence is skipped, which is
          * the big battery saver). Returns true when "Hey Brick" was heard.
          */
-        fun step(gate: SpeechGate, rec: Recognizer, chunk: ShortArray, n: Int): Boolean {
+        /** While Brick talks: how many chunks in a row the partial result has said "hey brick". */
+        @Volatile private var partialHits = 0
+
+        /**
+         * One 100 ms chunk of listening: the speech model only runs around sound (silence is skipped, which is
+         * the big battery saver). Returns true when "Hey Brick" was heard.
+         *
+         * While Brick is [talking] there's never a pause after "hey brick" (its voice goes on), so the phrase counts
+         * anywhere in what's heard, and from the running (partial) result once it holds for three chunks in a row.
+         */
+        fun step(gate: SpeechGate, rec: Recognizer, chunk: ShortArray, n: Int, talking: Boolean = false, loose: Boolean = false): Boolean {
             val out = gate.offer(chunk, n)
             for ((c, len) in out.chunks) {
-                if (rec.acceptWaveForm(c, len) && heard(rec.result)) {
-                    rec.reset()
-                    gate.reset()
-                    return true
+                if (rec.acceptWaveForm(c, len)) {
+                    if (heard(rec.result, anywhere = talking, loose = loose)) {
+                        rec.reset(); gate.reset(); partialHits = 0
+                        return true
+                    }
+                    partialHits = 0
+                } else if (talking) {
+                    val p = try { JSONObject(rec.partialResult).optString("partial") } catch (e: Exception) { "" }
+                    if (p.contains(PHRASE) || loose && p.split(" ").contains("brick")) {
+                        // The running guess has no confidence: once it holds, have the model settle and check that.
+                        if (++partialHits >= 3) {
+                            val hit = heard(rec.finalResult, anywhere = true, loose = loose)
+                            rec.reset(); partialHits = 0
+                            if (hit) { gate.reset(); return true }
+                        }
+                    } else {
+                        partialHits = 0
+                        // A long stretch of Brick's own voice: start fresh so the model stays quick.
+                        if (p.split(' ').count { it == "[unk]" } > 12) rec.reset()
+                    }
                 }
             }
             if (out.ended) {
                 // The sound stopped: let the model finish what it heard, then start fresh.
-                val hit = heard(rec.finalResult)
+                val hit = heard(rec.finalResult, anywhere = talking, loose = loose)
                 rec.reset()
+                partialHits = 0
                 return hit
             }
             return false
         }
 
-        /** True for a confident "hey brick" (every word at or above [MIN_CONFIDENCE]). */
-        fun heard(json: String): Boolean = try {
+        /**
+         * True for a confident "hey brick" (both words at or above [MIN_CONFIDENCE]): the whole utterance normally,
+         * or [anywhere] in it (other sound around it, as when Brick is talking).
+         */
+        fun heard(json: String, anywhere: Boolean = false, loose: Boolean = false): Boolean = try {
             val o = JSONObject(json)
             val words = o.optJSONArray("result")
-            o.optString("text") == PHRASE && words != null && words.length() == 2 &&
-                (0 until words.length()).all { words.getJSONObject(it).optDouble("conf", 0.0) >= MIN_CONFIDENCE }
+            if (words == null) false
+            else if (!anywhere) {
+                o.optString("text") == PHRASE && words.length() == 2 &&
+                    (0 until words.length()).all { words.getJSONObject(it).optDouble("conf", 0.0) >= MIN_CONFIDENCE }
+            } else {
+                (0 until words.length() - 1).any { i ->
+                    val a = words.getJSONObject(i)
+                    val b = words.getJSONObject(i + 1)
+                    a.optString("word") == "hey" && b.optString("word") == "brick" &&
+                        a.optDouble("conf", 0.0) >= TALK_CONFIDENCE && b.optDouble("conf", 0.0) >= TALK_CONFIDENCE
+                } ||
+                    // [loose]: Brick was ducked because you spoke over it; "hey" may be lost under its voice.
+                    loose && (0 until words.length()).any { i ->
+                        val w = words.getJSONObject(i)
+                        w.optString("word") == "brick" && w.optDouble("conf", 0.0) >= LOOSE_CONFIDENCE
+                    }
+            }
         } catch (e: Exception) {
             false
         }
@@ -182,13 +241,20 @@ class WakeWordService : Service() {
             }
             return low
         }
+        var echo: android.media.audiofx.AcousticEchoCanceler? = null
+        var wasTalking = false
+        var waiting = false
+        var callStyle = false
+        fun player() = (application as? com.brick.assistant.BrickApp)?.takeIf { it.ready }?.container?.player
         fun closeRecorder() {
+            echo?.let { runCatching { it.release() } }
+            echo = null
             recorder?.let { runCatching { it.stop() }; it.release() }
             recorder = null
         }
         try {
             model = Model(modelDir.absolutePath)
-            rec = Recognizer(model, SAMPLE_RATE.toFloat(), "[\"$PHRASE\", \"[unk]\"]").apply { setWords(true) }
+            rec = Recognizer(model, SAMPLE_RATE.toFloat(), GRAMMAR).apply { setWords(true) }
             val minBuf = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
             val chunk = ShortArray(SAMPLE_RATE / 10) // 100 ms
             while (!stopping) {
@@ -222,9 +288,26 @@ class WakeWordService : Service() {
                     continue
                 }
                 if (cpu.isHeld) cpu.release()
+                // Brick talking (so "Hey Brick" may interrupt it): start fresh when that changes. (The word list stays the
+                // same: changing it while listening can crash the speech model.)
+                val talking = WakeWordGate.speaking != null
+                if (talking != wasTalking) {
+                    wasTalking = talking
+                    rec.reset()
+                    gate.reset()
+                }
+                // Brick talking call style: listen through the call microphone, which has Brick's voice taken out.
+                val wantCall = talking && player()?.callMode == true
+                if (wantCall != callStyle) {
+                    closeRecorder()
+                    callStyle = wantCall
+                    rec.reset()
+                    gate.reset()
+                }
                 if (recorder == null) {
                     val r = AudioRecord(
-                        MediaRecorder.AudioSource.VOICE_RECOGNITION, SAMPLE_RATE,
+                        if (callStyle) MediaRecorder.AudioSource.VOICE_COMMUNICATION else MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                        SAMPLE_RATE,
                         AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
                         maxOf(minBuf, chunk.size * 4),
                     )
@@ -235,7 +318,11 @@ class WakeWordService : Service() {
                         continue
                     }
                     // The phone's own microphone, even with Bluetooth headphones connected.
-                    builtInMic()?.let { r.preferredDevice = it }
+                    if (!callStyle) builtInMic()?.let { r.preferredDevice = it }
+                    // Brick may be talking while this listens (so "Hey Brick" can interrupt it): take its voice out.
+                    if (android.media.audiofx.AcousticEchoCanceler.isAvailable()) {
+                        echo = runCatching { android.media.audiofx.AcousticEchoCanceler.create(r.audioSessionId)?.apply { enabled = true } }.getOrNull()
+                    }
                     r.startRecording()
                     recorder = r
                     status = "Listening for \"Hey Brick\""
@@ -247,7 +334,17 @@ class WakeWordService : Service() {
                     com.brick.assistant.voice.WakeHandoff.add(chunk, n)
                     continue
                 }
-                if (step(gate, rec, chunk, n)) trigger()
+                // Brick between lines (waiting on an answer, nothing playing): don't listen, or a stray sound mid-wait
+                // could pass for "Hey Brick" and start the request over.
+                if (talking && player()?.playing != true) {
+                    if (!waiting) { rec.reset(); gate.reset(); waiting = true }
+                    continue
+                }
+                waiting = false
+                if (step(gate, rec, chunk, n, talking) && WakeWordGate.mayTrigger()) {
+                    android.util.Log.i("BrickWake", "heard Hey Brick" + if (talking) " while Brick was talking" else "")
+                    trigger()
+                }
             }
         } catch (e: Throwable) {
             status = "Hey Brick stopped (${e.message})"

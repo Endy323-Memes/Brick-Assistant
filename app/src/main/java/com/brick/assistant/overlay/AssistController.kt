@@ -26,6 +26,8 @@ interface AssistUi {
     fun setPanel(readout: com.brick.assistant.brain.Readout?) {}
     /** Answering in text only (Quiet When): the card says so. */
     fun setQuiet(on: Boolean) {}
+    /** Brick has started answering: offer "Talk to Brick" (hidden again once a new request starts). */
+    fun setAskAgain(visible: Boolean) {}
 }
 
 /**
@@ -66,10 +68,21 @@ class AssistController(
         handle(text)
     }
 
+    /** Brick or the unit is mid-line (interrupted by "Hey Brick" or "ask again"): stop talking at once. */
+    private fun hushSpeech() {
+        if (WakeWordGate.speaking != null) {
+            WakeWordGate.speaking = null
+            container.player.stopNow()
+        }
+    }
+
     fun start() {
+        hushSpeech()
+        container.player.endCallMode()
         job?.cancel()
         listener.cancel()
         holdWakeWord() // the Hey Brick listener steps aside until this request is finished
+        ui.setAskAgain(false)
         val t = topic
         ui.setState(PulseView.Mode.LISTENING, if (t != null) "${t.prompt}: ${t.hint}…" else "Go ahead…")
         job = scope.launch {
@@ -108,6 +121,7 @@ class AssistController(
         job?.cancel()
         listener.cancel()
         holdWakeWord()
+        ui.setAskAgain(false)
         ui.setState(PulseView.Mode.LISTENING, "Go ahead, I'm writing…")
         listening = true
         listener.dictate(object : VoiceListener.Callbacks {
@@ -156,11 +170,26 @@ class AssistController(
         handle(text.trim(), dictation = container.assistant.awaitingDictation)
     }
 
+    /**
+     * The answer is finished (nothing more will be said): "Hey Brick" listens again while the card is still up, and
+     * the card keeps offering "Talk to Brick". Either one starts the next request in this same card.
+     */
+    private fun answerDone() {
+        WakeWordGate.speaking = null
+        container.player.endCallMode()
+        releaseWakeWord()
+        ui.setAskAgain(true)
+    }
+
     private fun handle(text: String, dictation: Boolean = false) {
+        holdWakeWord() // Brick is answering: no "Hey Brick" until it's done
+        ui.setAskAgain(false)
         if (text.isNotBlank()) container.log.add(LogEntry(Speaker.USER, text))
         ui.setState(PulseView.Mode.THINKING, if (dictation && text.isBlank()) "(nothing)" else text)
         job?.cancel()
         waitingToClose = false
+        // "Hey Brick" may interrupt the answer: speak it call style so the phone takes Brick's voice out of the mic.
+        if (container.settings.current.wakeWordEnabled) container.player.beginCallMode()
         job = scope.launch {
             var lastDavid: String? = null
             var panel = false
@@ -173,17 +202,25 @@ class AssistController(
                     container.log.add(e)
                     ui.setQuiet(container.assistant.lastTextOnly)
                     if (e.panel) { panel = true; if (e.readout?.lyrics != null) lyrics = true; ui.setPanel(e.readout ?: com.brick.assistant.brain.Readout(e.text)); return@handle }
-                    if (e.speaker == Speaker.DAVID || e.speaker == Speaker.ROBOT) answerChars += e.text.length
+                    if (e.speaker == Speaker.DAVID || e.speaker == Speaker.ROBOT) {
+                        answerChars += e.text.length
+                        // Talking now: "Hey Brick" may interrupt (it cuts this line off and listens).
+                        WakeWordGate.speaking = e.text
+                        releaseWakeWord()
+                        ui.setAskAgain(true) // "Talk to Brick" shows as soon as Brick starts answering
+                    }
                     when (e.speaker) {
                         Speaker.DAVID -> { lastDavid = e.text; ui.setState(PulseView.Mode.DAVID, e.text, text) }
                         Speaker.ROBOT -> ui.setState(PulseView.Mode.ROBOT, e.text, lastDavid ?: text)
                         else -> {}
                     }
                 }
+                WakeWordGate.speaking = null // everything has been said
+                container.player.endCallMode()
                 // Typing: the card stays up for the answer or the next request (tap outside to close).
-                if (typing) return@launch
+                if (typing) { answerDone(); return@launch }
                 // Lyrics: the card stays up while you read along (tap outside to close).
-                if (lyrics) return@launch
+                if (lyrics) { answerDone(); return@launch }
                 // Brick asked a yes-or-no question (e.g. "Send this text?"): listen for the answer.
                 if (container.assistant.awaitingConfirmation) {
                     start()
@@ -197,16 +234,18 @@ class AssistController(
                 // Time to read what wasn't spoken, or the readout (tap outside to close sooner).
                 val readMs = (answerChars / TermCard.CHARS_PER_SECOND * 1000).toLong() + 2500
                 waitingToClose = true
+                answerDone()
                 delay(
                     when {
                         container.assistant.lastTextOnly -> maxOf(readMs, if (panel) 10_000L else 4000L).coerceAtMost(25_000L)
                         panel -> 10_000L
-                        else -> 1400L
+                        else -> 4000L // long enough to tap "ask again" or say "Hey Brick"
                     },
                 )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                container.player.endCallMode()
                 container.log.add(LogEntry(Speaker.SYSTEM, "Error: ${e.message}"))
             }
             onDone()
@@ -232,6 +271,8 @@ class AssistController(
     }
 
     fun cancel() {
+        WakeWordGate.speaking = null
+        container.player.endCallMode()
         job?.cancel()
         listener.cancel()
         listening = false

@@ -11,6 +11,32 @@ object MediaCards {
         sub?.takeIf { it.isNotBlank() }?.let { rows += Box.wrap(Box.ascii(it), max = 2) }
     }
 
+    /** The name on a source's button: short, the same on every card. */
+    private fun shortName(name: String): String = when {
+        name.startsWith("Apple TV") -> "Apple TV"
+        name.startsWith("Fandango") -> "Fandango"
+        name.startsWith("Google TV") -> "Google TV"
+        name.startsWith("Amazon Prime") || name == "Prime Video" -> "Prime Video"
+        name.startsWith("eBay") -> "eBay"
+        name == "Barnes & Noble" -> "B&N"
+        name.startsWith("iTunes") -> "iTunes"
+        name.startsWith("Amazon") && name != "Amazon" -> "Amazon"
+        name == "The Roku Channel" -> "Roku Channel"
+        name.startsWith("PlayStation Store") -> "PS Store"
+        name.startsWith("Nintendo eShop") -> "eShop"
+        name.startsWith("Xbox Store") || name.startsWith("Microsoft Store") -> "Xbox Store"
+        name.startsWith("Epic Games") -> "Epic"
+        name.startsWith("Google Play Books") -> "Play Books"
+        name.startsWith("BoardGameGeek") -> "BGG"
+        name.startsWith("Miniature Market") -> "Mini Market"
+        name.startsWith("Library") -> "Library"
+        else -> name.substringBefore(" (").trim()
+    }
+
+    /** One button for every source the card lists, in the card's order (up to six: two rows). */
+    internal fun sourceButtons(sources: List<Pair<String, String>>, open: (String) -> Unit): List<Control> =
+        sources.distinctBy { shortName(it.first) }.take(6).map { (name, url) -> Control.Button(shortName(name)) { open(url) } }
+
     private fun videoSub(v: VideoInfo) = listOfNotNull(v.year, v.kind?.label?.let { if (it.startsWith("TV")) it else it.lowercase(us) }, v.certificate, v.network).joinToString(" · ")
 
     private fun bar(p: Int) = Box.bar((p + 5) / 10, 10)
@@ -33,10 +59,11 @@ object MediaCards {
         rows += ""
         rows += Box.kv("SOURCE", listOfNotNull(if (lines.isNotEmpty() || v.certificate != null) "Wikidata" else null,
             v.tmdb?.let { "TMDB" }, v.tvmaze?.let { "TVmaze" }).joinToString(", ").ifEmpty { "Wikidata" })
-        val controls = listOf(
-            Control.Button("Rotten Tomatoes") { open("https://www.rottentomatoes.com/search?search=${Http.enc(v.title)}") },
-            Control.Button("IMDb") { open("https://www.imdb.com/find/?q=${Http.enc(v.title)}") },
-        )
+        val controls = sourceButtons(listOf(
+            "Rotten Tomatoes" to "https://www.rottentomatoes.com/search?search=${Http.enc(v.title)}",
+            "IMDb" to "https://www.imdb.com/find/?q=${Http.enc(v.title)}",
+            "Metacritic" to "https://www.metacritic.com/search/${Http.enc(v.title).replace("+", "%20")}/",
+        ), open)
         return Readout(Box.build("RATINGS", rows), image = v.image, controls = controls)
     }
 
@@ -71,9 +98,9 @@ object MediaCards {
         rows += Box.kv("KEY", "* listed  ? check there")
         rows += Box.kv("SOURCE", v.listingSource + (if (v.apple != null) ", Apple" else ""))
         if (noKey) rows += Box.wrap("Listings can be out of date. Add a free TMDB key in Settings for exact, current ones.", max = 3)
-        val first = (if (free) freeSpots + stream else stream + freeSpots).take(2) + buy.take(1)
-        val controls = first.distinctBy { it.name }.map { s -> Control.Button(s.name) { open(s.url) } }
-        return Readout(Box.build("WHERE TO WATCH", rows), image = v.image, controls = controls)
+        // Free first when that's what was asked, then streaming; stores after (the order the card lists them).
+        val ordered = (if (free) freeSpots + stream else stream + freeSpots) + buy
+        return Readout(Box.build("WHERE TO WATCH", rows), image = v.image, controls = sourceButtons(ordered.map { it.name to it.url }, open))
     }
 
     private fun storeRows(rows: MutableList<String>, s: Store) {
@@ -91,6 +118,14 @@ object MediaCards {
             rows += ""
             rows += if (rent) "RENT DIGITALLY" else "DIGITAL"
             for (s in digital) storeRows(rows, s)
+            if (!rent && v.prices.isNotEmpty()) {
+                v.lowest?.let { l ->
+                    val at = l.ends?.let { d -> runCatching { java.time.LocalDate.parse(d) }.getOrNull() }
+                        ?.let { " (${it.month.getDisplayName(java.time.format.TextStyle.SHORT, java.util.Locale.US)} ${it.year})" } ?: ""
+                    rows += Box.wrap("Lowest ever on ${l.store}: ${Prices.money(l.now)}$at", "  ", indent = 2, max = 2)
+                }
+                rows += Box.wrap("Prices from CheapCharts, which tracks these stores.", "  ", indent = 2, max = 2)
+            }
             if (v.kind != LookupKind.TV_SHOW) rows += Box.wrap("Movies Anywhere (free) links movies from most big studios across Apple, Amazon, Google and Fandango.", "  ", indent = 2, max = 3)
         }
         if (physical.isNotEmpty()) {
@@ -101,7 +136,10 @@ object MediaCards {
             rows += Box.wrap("Needs a player and shelf space.", "    - ", indent = 6, max = 2)
             rows += Box.wrap("Best Buy stopped selling movies on disc in 2024.", "  ", indent = 2, max = 2)
         }
-        val controls = (digital.take(2) + physical.take(1)).map { s -> Control.Button(s.name.substringBefore(" (")) { open(s.url) } }
+        // Digital stores first, then disc stores, as listed (eBay's used copies last).
+        // CheapCharts (price history) right after the digital stores, so it isn't cut off by the button limit.
+        val controls = sourceButtons(digital.map { it.name to it.url } + listOfNotNull(v.chartsPage?.takeIf { !rent }?.let { "CheapCharts" to it }) +
+            physical.filter { !it.name.startsWith("eBay") }.map { it.name to it.url }, open)
         return Readout(Box.build(if (rent) "WHERE TO RENT" else "WHERE TO BUY", rows), image = v.image, controls = controls)
     }
 
@@ -146,7 +184,7 @@ object MediaCards {
         "Vocals" -> "VOCALS"; "Backing vocals" -> "BACKING"; "Producer" -> "PRODUCE"; "Executive producer" -> "EXEC"
         "Writer" -> "WRITERS"; "Composer" -> "MUSIC"; "Lyricist" -> "LYRICS"; "Arranger" -> "ARRANGE"; "Programming" -> "PROGRAM"
         "Mixing" -> "MIX"; "Mastering" -> "MASTER"; "Engineer" -> "ENGINE"; "Performer" -> "PLAYERS"
-        else -> r.uppercase(us).replace(Regex("[^A-Z]"), "").take(7).ifEmpty { "PLAYS" }
+        else -> r.uppercase(us).replace(Patterns.get("[^A-Z]"), "").take(7).ifEmpty { "PLAYS" }
     }
 
     /** Song credits: who sings, produced, wrote and played, plus album, label, genre and length. */

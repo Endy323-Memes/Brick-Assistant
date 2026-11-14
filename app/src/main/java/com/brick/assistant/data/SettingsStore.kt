@@ -91,6 +91,10 @@ data class AppSettings(
     val goveeKey: String = "",
     /** Free TMDB key (v3 key or read token): exact, current "where to watch" listings and TMDB ratings. */
     val tmdbKey: String = "",
+    /** "Where can I buy Avengers" with no movie named: assume the newest movie (or a show's newest season) instead of asking which. */
+    val assumeNewest: Boolean = false,
+    /** BoardGameGeek API token (free; board game ratings need it). */
+    val bggToken: String = "",
     /** Weather source: "auto" (AccuWeather with a key, else Open-Meteo), "accuweather", "open_meteo", or a [com.brick.assistant.brain.WeatherProvider] id. */
     val weatherSource: String = "auto",
     /** API keys for the other weather sources, by source id. */
@@ -99,6 +103,14 @@ data class AppSettings(
     val autoSendTexts: Boolean = false,
     /** Plays the bottom animation in Spotify, YouTube or Google Maps colors when Brick uses those apps. */
     val brandGlow: Boolean = true,
+    /** Keeps web answers on the phone so repeat questions answer right away ([com.brick.assistant.brain.WebCache]). */
+    val saveWebAnswers: Boolean = true,
+    /** Phobia filters that are on ([com.brick.assistant.brain.Phobias] keys): searches about them don't happen. */
+    val phobias: Set<String> = emptySet(),
+    /** Of those, the ones whose searches are allowed anyway, with no picture on the card. */
+    val phobiasAllowed: Set<String> = emptySet(),
+    /** Of those, the ones whose blocked searches still offer a web link, to look it up yourself. */
+    val phobiasLinks: Set<String> = emptySet(),
 ) {
     /** The weather source and every key (AccuWeather's stays in its own field). */
     fun weatherConfig() = com.brick.assistant.brain.WeatherConfig(
@@ -155,11 +167,17 @@ data class AppSettings(
         put("accuWeatherKey", accuWeatherKey)
         put("goveeKey", goveeKey)
         put("tmdbKey", tmdbKey)
+        put("assumeNewest", assumeNewest)
+        put("bggToken", bggToken)
         put("weatherSource", weatherSource)
         put("weatherKeys", JSONObject().apply { weatherKeys.forEach { (k, v) -> put(k, v) } })
         put("musicPackage", musicPackage)
         put("autoSendTexts", autoSendTexts)
         put("brandGlow", brandGlow)
+        put("saveWebAnswers", saveWebAnswers)
+        put("phobias", phobias.sorted().joinToString(","))
+        put("phobiasAllowed", phobiasAllowed.sorted().joinToString(","))
+        put("phobiasLinks", phobiasLinks.sorted().joinToString(","))
     }.toString()
 
     /** Copy with only the robot tuning reset to defaults. */
@@ -234,11 +252,17 @@ data class AppSettings(
                     accuWeatherKey = o.optString("accuWeatherKey", d.accuWeatherKey),
                     goveeKey = o.optString("goveeKey", d.goveeKey),
                     tmdbKey = o.optString("tmdbKey", d.tmdbKey),
+                    assumeNewest = o.optBoolean("assumeNewest", d.assumeNewest),
+                    bggToken = o.optString("bggToken", d.bggToken),
                     weatherSource = o.optString("weatherSource", d.weatherSource),
                     weatherKeys = o.optJSONObject("weatherKeys")?.let { k -> k.keys().asSequence().associateWith { k.optString(it) } } ?: d.weatherKeys,
                     musicPackage = o.optString("musicPackage", d.musicPackage),
                     autoSendTexts = o.optBoolean("autoSendTexts", d.autoSendTexts),
                     brandGlow = o.optBoolean("brandGlow", d.brandGlow),
+                    saveWebAnswers = o.optBoolean("saveWebAnswers", d.saveWebAnswers),
+                    phobias = o.optString("phobias", "").split(',').filter { it.isNotBlank() }.toSet(),
+                    phobiasAllowed = o.optString("phobiasAllowed", "").split(',').filter { it.isNotBlank() }.toSet(),
+                    phobiasLinks = o.optString("phobiasLinks", "").split(',').filter { it.isNotBlank() }.toSet(),
                 ).let { if (o.optInt("robotPresetVersion", 1) < ROBOT_PRESET_VERSION) it.withDefaultRobot() else it }
             } catch (e: Exception) {
                 AppSettings()
@@ -254,6 +278,8 @@ class SettingsStore(context: Context) {
     val state: StateFlow<AppSettings> = _state
     val current: AppSettings get() = _state.value
 
+    init { com.brick.assistant.brain.WebCache.enabled = _state.value.saveWebAnswers }
+
     @Synchronized
     fun update(transform: (AppSettings) -> AppSettings) {
         val prev = _state.value
@@ -263,5 +289,9 @@ class SettingsStore(context: Context) {
         _state.value = next
         prefs.edit().putString("json", next.toJson()).apply()
         ControlProvider.notifyChanged(app, prev.wakeWordEnabled != next.wakeWordEnabled)
+        if (prev.saveWebAnswers != next.saveWebAnswers) {
+            com.brick.assistant.brain.WebCache.enabled = next.saveWebAnswers
+            if (!next.saveWebAnswers) Thread { com.brick.assistant.brain.WebCache.clear() }.start()
+        }
     }
 }

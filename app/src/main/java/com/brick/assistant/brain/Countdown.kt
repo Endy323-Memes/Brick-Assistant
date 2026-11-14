@@ -44,10 +44,10 @@ object Countdown {
         "^is (?:it|today) (.+?) (?:yet|today)$" to false,
     ).map { Regex(it.first) to it.second }
 
-    private val STRONG = Regex("\\b(?:until|till|til|before|since|ago|count ?down)\\b")
+    private val STRONG = Patterns.get("\\b(?:until|till|til|before|since|ago|count ?down)\\b")
 
     /** "when is thanksgiving", "when's easter this year": only for holidays, so "when is the game" stays a search. */
-    private val WHEN = Regex("^when(?:'s| is| does| do)? (.+?)(?: this year| next year| start| begin| fall| land)*$")
+    private val WHEN = Patterns.get("^when(?:'s| is| does| do)? (.+?)(?: this year| next year| start| begin| fall| land)*$")
 
     private fun unitOf(u: String?) = when {
         u == null -> CountUnit.DAYS
@@ -61,13 +61,13 @@ object Countdown {
 
     /** Cleans the target: "the next christmas?" -> "christmas". */
     fun cleanTarget(t: String) = t.trim().trimEnd('?', '!', '.').trim()
-        .replace(Regex("^(?:the |next |this |upcoming |coming )+"), "")
-        .replace(Regex("\\s+(?:comes?|gets? here|arrives?|starts?|begins?|is here|happens?)$"), "")
+        .replace(Patterns.get("^(?:the |next |this |upcoming |coming )+"), "")
+        .replace(Patterns.get("\\s+(?:comes?|gets? here|arrives?|starts?|begins?|is here|happens?)$"), "")
         .trim()
 
     fun parse(text: String, now: LocalDateTime = LocalDateTime.now()): Request.Countdown? {
-        val s = text.lowercase(us).trim().trimEnd('?', '!', '.').replace('’', '\'').replace(Regex("\\s+"), " ")
-        if (Regex("\\b(?:timer|alarm|stopwatch)s?\\b").containsMatchIn(s)) return null
+        val s = text.lowercase(us).trim().trimEnd('?', '!', '.').replace('’', '\'').replace(Patterns.get("\\s+"), " ")
+        if (Patterns.get("\\b(?:timer|alarm|stopwatch)s?\\b").containsMatchIn(s)) return null
         for ((rx, since) in FORMS) {
             val m = rx.find(s) ?: continue
             val g = m.groupValues.drop(1).filter { it.isNotEmpty() }
@@ -113,44 +113,44 @@ object Countdown {
     private fun thanksgiving(y: Int) = nth(y, Month.NOVEMBER, DayOfWeek.THURSDAY, 4)
 
     private val HOLIDAYS: List<Holiday> = listOf(
-        Holiday("Christmas Eve", Regex("^(?:christmas|xmas|x-mas) eve$")) { LocalDate.of(it, 12, 24) },
-        Holiday("Christmas", Regex("^(?:christmas|xmas|x-mas)(?: day)?$")) { LocalDate.of(it, 12, 25) },
-        Holiday("Boxing Day", Regex("^boxing day$")) { LocalDate.of(it, 12, 26) },
-        Holiday("New Year's Eve", Regex("^new ?year'?s eve$")) { LocalDate.of(it, 12, 31) },
-        Holiday("New Year's Day", Regex("^(?:new ?year'?s?(?: day)?|the new year|next year)$")) { LocalDate.of(it, 1, 1) },
-        Holiday("Martin Luther King Jr. Day", Regex("^(?:mlk|martin luther king(?: jr\\.?| junior)?)(?:'s)? day$")) { nth(it, Month.JANUARY, DayOfWeek.MONDAY, 3) },
-        Holiday("Groundhog Day", Regex("^groundhog'?s? day$")) { LocalDate.of(it, 2, 2) },
-        Holiday("Valentine's Day", Regex("^(?:saint |st\\.? )?valentine'?s?(?: day)?$")) { LocalDate.of(it, 2, 14) },
-        Holiday("Presidents' Day", Regex("^(?:presidents'?|president'?s|washington'?s birthday)(?: day)?$")) { nth(it, Month.FEBRUARY, DayOfWeek.MONDAY, 3) },
-        Holiday("Leap Day", Regex("^leap day$")) { y -> (y until y + 8).firstOrNull { java.time.Year.isLeap(it.toLong()) }?.let { LocalDate.of(it, 2, 29) } },
-        Holiday("Pi Day", Regex("^pi day$")) { LocalDate.of(it, 3, 14) },
-        Holiday("St. Patrick's Day", Regex("^(?:saint |st\\.? )?(?:patrick|paddy|patty)'?s?(?: day)?$")) { LocalDate.of(it, 3, 17) },
-        Holiday("Mardi Gras", Regex("^(?:mardi gras|fat tuesday|shrove tuesday|pancake day)$")) { easter(it).minusDays(47) },
-        Holiday("Ash Wednesday", Regex("^ash wednesday$")) { easter(it).minusDays(46) },
-        Holiday("Good Friday", Regex("^good friday$")) { easter(it).minusDays(2) },
-        Holiday("Easter", Regex("^easter(?: sunday| day)?$")) { easter(it) },
-        Holiday("April Fools' Day", Regex("^april fool'?s'?(?: day)?$")) { LocalDate.of(it, 4, 1) },
-        Holiday("Tax Day", Regex("^tax day$")) { LocalDate.of(it, 4, 15) },
-        Holiday("Earth Day", Regex("^earth day$")) { LocalDate.of(it, 4, 22) },
-        Holiday("Star Wars Day", Regex("^(?:star wars day|may the fourth|may the 4th)$")) { LocalDate.of(it, 5, 4) },
-        Holiday("Cinco de Mayo", Regex("^cinco de mayo$")) { LocalDate.of(it, 5, 5) },
-        Holiday("Mother's Day", Regex("^mother'?s'? day$")) { nth(it, Month.MAY, DayOfWeek.SUNDAY, 2) },
-        Holiday("Memorial Day", Regex("^memorial day$")) { last(it, Month.MAY, DayOfWeek.MONDAY) },
-        Holiday("Father's Day", Regex("^father'?s'? day$")) { nth(it, Month.JUNE, DayOfWeek.SUNDAY, 3) },
-        Holiday("Juneteenth", Regex("^juneteenth$")) { LocalDate.of(it, 6, 19) },
-        Holiday("the Fourth of July", Regex("^(?:independence day|(?:the )?(?:fourth|4th) of july|july (?:fourth|4th)|july 4)$")) { LocalDate.of(it, 7, 4) },
-        Holiday("Labor Day", Regex("^labou?r day$")) { nth(it, Month.SEPTEMBER, DayOfWeek.MONDAY, 1) },
-        Holiday("Columbus Day", Regex("^(?:columbus|indigenous peoples'?) day$")) { nth(it, Month.OCTOBER, DayOfWeek.MONDAY, 2) },
-        Holiday("Halloween", Regex("^(?:halloween|hallowe'en|all hallows'? eve)$")) { LocalDate.of(it, 10, 31) },
-        Holiday("Election Day", Regex("^election day$")) { nth(it, Month.NOVEMBER, DayOfWeek.MONDAY, 1).plusDays(1) },
-        Holiday("Veterans Day", Regex("^veterans'? day$")) { LocalDate.of(it, 11, 11) },
-        Holiday("Thanksgiving", Regex("^thanksgiving(?: day)?$")) { thanksgiving(it) },
-        Holiday("Black Friday", Regex("^black friday$")) { thanksgiving(it).plusDays(1) },
-        Holiday("Cyber Monday", Regex("^cyber monday$")) { thanksgiving(it).plusDays(4) },
-        Holiday("the first day of spring", Regex("^(?:the )?(?:first day of )?spring$")) { LocalDate.of(it, 3, 20) },
-        Holiday("the first day of summer", Regex("^(?:the )?(?:first day of )?summer$")) { LocalDate.of(it, 6, 21) },
-        Holiday("the first day of fall", Regex("^(?:the )?(?:first day of )?(?:fall|autumn)$")) { LocalDate.of(it, 9, 22) },
-        Holiday("the first day of winter", Regex("^(?:the )?(?:first day of )?winter$")) { LocalDate.of(it, 12, 21) },
+        Holiday("Christmas Eve", Patterns.get("^(?:christmas|xmas|x-mas) eve$")) { LocalDate.of(it, 12, 24) },
+        Holiday("Christmas", Patterns.get("^(?:christmas|xmas|x-mas)(?: day)?$")) { LocalDate.of(it, 12, 25) },
+        Holiday("Boxing Day", Patterns.get("^boxing day$")) { LocalDate.of(it, 12, 26) },
+        Holiday("New Year's Eve", Patterns.get("^new ?year'?s eve$")) { LocalDate.of(it, 12, 31) },
+        Holiday("New Year's Day", Patterns.get("^(?:new ?year'?s?(?: day)?|the new year|next year)$")) { LocalDate.of(it, 1, 1) },
+        Holiday("Martin Luther King Jr. Day", Patterns.get("^(?:mlk|martin luther king(?: jr\\.?| junior)?)(?:'s)? day$")) { nth(it, Month.JANUARY, DayOfWeek.MONDAY, 3) },
+        Holiday("Groundhog Day", Patterns.get("^groundhog'?s? day$")) { LocalDate.of(it, 2, 2) },
+        Holiday("Valentine's Day", Patterns.get("^(?:saint |st\\.? )?valentine'?s?(?: day)?$")) { LocalDate.of(it, 2, 14) },
+        Holiday("Presidents' Day", Patterns.get("^(?:presidents'?|president'?s|washington'?s birthday)(?: day)?$")) { nth(it, Month.FEBRUARY, DayOfWeek.MONDAY, 3) },
+        Holiday("Leap Day", Patterns.get("^leap day$")) { y -> (y until y + 8).firstOrNull { java.time.Year.isLeap(it.toLong()) }?.let { LocalDate.of(it, 2, 29) } },
+        Holiday("Pi Day", Patterns.get("^pi day$")) { LocalDate.of(it, 3, 14) },
+        Holiday("St. Patrick's Day", Patterns.get("^(?:saint |st\\.? )?(?:patrick|paddy|patty)'?s?(?: day)?$")) { LocalDate.of(it, 3, 17) },
+        Holiday("Mardi Gras", Patterns.get("^(?:mardi gras|fat tuesday|shrove tuesday|pancake day)$")) { easter(it).minusDays(47) },
+        Holiday("Ash Wednesday", Patterns.get("^ash wednesday$")) { easter(it).minusDays(46) },
+        Holiday("Good Friday", Patterns.get("^good friday$")) { easter(it).minusDays(2) },
+        Holiday("Easter", Patterns.get("^easter(?: sunday| day)?$")) { easter(it) },
+        Holiday("April Fools' Day", Patterns.get("^april fool'?s'?(?: day)?$")) { LocalDate.of(it, 4, 1) },
+        Holiday("Tax Day", Patterns.get("^tax day$")) { LocalDate.of(it, 4, 15) },
+        Holiday("Earth Day", Patterns.get("^earth day$")) { LocalDate.of(it, 4, 22) },
+        Holiday("Star Wars Day", Patterns.get("^(?:star wars day|may the fourth|may the 4th)$")) { LocalDate.of(it, 5, 4) },
+        Holiday("Cinco de Mayo", Patterns.get("^cinco de mayo$")) { LocalDate.of(it, 5, 5) },
+        Holiday("Mother's Day", Patterns.get("^mother'?s'? day$")) { nth(it, Month.MAY, DayOfWeek.SUNDAY, 2) },
+        Holiday("Memorial Day", Patterns.get("^memorial day$")) { last(it, Month.MAY, DayOfWeek.MONDAY) },
+        Holiday("Father's Day", Patterns.get("^father'?s'? day$")) { nth(it, Month.JUNE, DayOfWeek.SUNDAY, 3) },
+        Holiday("Juneteenth", Patterns.get("^juneteenth$")) { LocalDate.of(it, 6, 19) },
+        Holiday("the Fourth of July", Patterns.get("^(?:independence day|(?:the )?(?:fourth|4th) of july|july (?:fourth|4th)|july 4)$")) { LocalDate.of(it, 7, 4) },
+        Holiday("Labor Day", Patterns.get("^labou?r day$")) { nth(it, Month.SEPTEMBER, DayOfWeek.MONDAY, 1) },
+        Holiday("Columbus Day", Patterns.get("^(?:columbus|indigenous peoples'?) day$")) { nth(it, Month.OCTOBER, DayOfWeek.MONDAY, 2) },
+        Holiday("Halloween", Patterns.get("^(?:halloween|hallowe'en|all hallows'? eve)$")) { LocalDate.of(it, 10, 31) },
+        Holiday("Election Day", Patterns.get("^election day$")) { nth(it, Month.NOVEMBER, DayOfWeek.MONDAY, 1).plusDays(1) },
+        Holiday("Veterans Day", Patterns.get("^veterans'? day$")) { LocalDate.of(it, 11, 11) },
+        Holiday("Thanksgiving", Patterns.get("^thanksgiving(?: day)?$")) { thanksgiving(it) },
+        Holiday("Black Friday", Patterns.get("^black friday$")) { thanksgiving(it).plusDays(1) },
+        Holiday("Cyber Monday", Patterns.get("^cyber monday$")) { thanksgiving(it).plusDays(4) },
+        Holiday("the first day of spring", Patterns.get("^(?:the )?(?:first day of )?spring$")) { LocalDate.of(it, 3, 20) },
+        Holiday("the first day of summer", Patterns.get("^(?:the )?(?:first day of )?summer$")) { LocalDate.of(it, 6, 21) },
+        Holiday("the first day of fall", Patterns.get("^(?:the )?(?:first day of )?(?:fall|autumn)$")) { LocalDate.of(it, 9, 22) },
+        Holiday("the first day of winter", Patterns.get("^(?:the )?(?:first day of )?winter$")) { LocalDate.of(it, 12, 21) },
     )
 
     private val dayFmt = DateTimeFormatter.ofPattern("EEEE, MMMM d", us)
@@ -171,22 +171,22 @@ object Countdown {
             return Target(h.name, d, holiday = true)
         }
         when {
-            Regex("^(?:the )?weekend$").matches(t) -> {
+            Patterns.get("^(?:the )?weekend$").matches(t) -> {
                 val d = if (today.dayOfWeek == DayOfWeek.SATURDAY || today.dayOfWeek == DayOfWeek.SUNDAY) today
                 else today.with(TemporalAdjusters.next(DayOfWeek.SATURDAY))
                 return Target("the weekend", d)
             }
-            Regex("^(?:the )?end of (?:the )?year$").matches(t) -> return Target("the end of the year", LocalDate.of(today.year, 12, 31))
-            Regex("^(?:the )?end of (?:the )?month$").matches(t) -> return Target("the end of the month", today.with(TemporalAdjusters.lastDayOfMonth()))
-            Regex("^(?:the )?end of (?:the )?week$").matches(t) -> return Target("the end of the week", today.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY)))
-            Regex("^(?:the year )?(20\\d\\d)$").matches(t) -> {
-                val y = Regex("20\\d\\d").find(t)!!.value.toInt()
+            Patterns.get("^(?:the )?end of (?:the )?year$").matches(t) -> return Target("the end of the year", LocalDate.of(today.year, 12, 31))
+            Patterns.get("^(?:the )?end of (?:the )?month$").matches(t) -> return Target("the end of the month", today.with(TemporalAdjusters.lastDayOfMonth()))
+            Patterns.get("^(?:the )?end of (?:the )?week$").matches(t) -> return Target("the end of the week", today.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY)))
+            Patterns.get("^(?:the year )?(20\\d\\d)$").matches(t) -> {
+                val y = Patterns.get("20\\d\\d").find(t)!!.value.toInt()
                 return Target(y.toString(), LocalDate.of(y, 1, 1))
             }
         }
         // A plain date, weekday or time: "march 3rd", "friday", "12/25", "tomorrow", "5 pm".
         val p = TimeParser.parse(t, now)
-        val rest = p.remainder.lowercase(us).replace(Regex("\\b(?:on|at|the|of|this|next|o'clock|oclock)\\b"), " ").trim()
+        val rest = p.remainder.lowercase(us).replace(Patterns.get("\\b(?:on|at|the|of|this|next|o'clock|oclock)\\b"), " ").trim()
         if (p.dateTime != null && rest.isEmpty()) {
             var d = p.dateTime.toLocalDate()
             if (since && d.isAfter(today)) d = d.minusYears(1)

@@ -1,5 +1,7 @@
 package com.brick.assistant.media
 
+import com.brick.assistant.brain.Patterns
+
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -146,7 +148,7 @@ object SpotifyPlayer {
      */
     suspend fun trackDetails(context: Context, title: String, artist: String?, durationMs: Long?, mediaId: String?): TrackDetails? = withContext(Dispatchers.IO) {
         if (!SpotifyAccount.isConnected(context)) return@withContext null
-        mediaId?.let { Regex("spotify:track:([A-Za-z0-9]{10,})").find(it)?.groupValues?.get(1) }?.let { id ->
+        mediaId?.let { Patterns.get("spotify:track:([A-Za-z0-9]{10,})").find(it)?.groupValues?.get(1) }?.let { id ->
             SpotifyAccount.api(context, "https://api.spotify.com/v1/tracks/$id")?.let(::details)?.let { return@withContext it }
         }
         val q = if (artist.isNullOrBlank()) title else "$title artist:$artist"
@@ -287,9 +289,9 @@ object SpotifyPlayer {
                 } else null
                 // Without an account, the public page lists the tracks: pick one at random.
                 val pick = fromApi?.takeIf { it.isNotBlank() } ?: get("https://open.spotify.com/$type/$id")?.let { html ->
-                    Regex("music:song\" content=\"https://open\\.spotify\\.com/track/([A-Za-z0-9]{22})").findAll(html)
+                    Patterns.get("music:song\" content=\"https://open\\.spotify\\.com/track/([A-Za-z0-9]{22})").findAll(html)
                         .map { it.groupValues[1] }.distinct().toList().randomOrNull()
-                        ?: Regex("open\\.spotify\\.com/track/([A-Za-z0-9]{22})").find(html)?.groupValues?.get(1)
+                        ?: Patterns.get("open\\.spotify\\.com/track/([A-Za-z0-9]{22})").find(html)?.groupValues?.get(1)
                 } ?: if (type == "artist") artistTrackFromWeb(id) else null
                 Log.d(TAG, "random start for $uri: $pick")
                 inContext(pick, uri)
@@ -314,7 +316,7 @@ object SpotifyPlayer {
     private fun artistTrackFromWeb(artistId: String): String? {
         val name = oembedTitle(Kind.ARTIST, artistId) ?: return null
         val html = get("https://html.duckduckgo.com/html/?q=" + URLEncoder.encode("$name spotify track", "UTF-8")) ?: return null
-        return Regex("open\\.spotify\\.com/track/([A-Za-z0-9]{22})").find(Uri.decode(html))?.groupValues?.get(1)
+        return Patterns.get("open\\.spotify\\.com/track/([A-Za-z0-9]{22})").find(Uri.decode(html))?.groupValues?.get(1)
     }
 
     private fun oembedTitle(kind: Kind, id: String): String? {
@@ -323,10 +325,10 @@ object SpotifyPlayer {
     }
 
     private fun norm(s: String) = s.lowercase()
-        .replace(Regex("\\(.*?\\)|\\[.*?]|\\s-\\s.*$"), " ")
-        .replace(Regex("[^a-z0-9 ]"), " ")
-        .replace(Regex("^the\\s+"), "")
-        .replace(Regex("\\s+"), " ").trim()
+        .replace(Patterns.get("\\(.*?\\)|\\[.*?]|\\s-\\s.*$"), " ")
+        .replace(Patterns.get("[^a-z0-9 ]"), " ")
+        .replace(Patterns.get("^the\\s+"), "")
+        .replace(Patterns.get("\\s+"), " ").trim()
 
     /** 0..1 word-overlap similarity, 1 for an exact (normalized) match. */
     fun similarity(a: String, b: String): Double {

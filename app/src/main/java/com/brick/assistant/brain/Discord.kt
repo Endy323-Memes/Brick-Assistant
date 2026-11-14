@@ -60,7 +60,7 @@ object Discord {
             val text = e.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.trim().orEmpty()
             if (text.isEmpty()) return null
             // Channel notifications often read "Alex: hi there".
-            val m = Regex("^([^:]{1,40}):\\s+(.+)$").find(text)
+            val m = Patterns.get("^([^:]{1,40}):\\s+(.+)$").find(text)
             messages += if (m != null && !title.equals(m.groupValues[1], true)) m.groupValues[1] to m.groupValues[2] else title to text
         }
         val reply = n.actions?.firstOrNull { a -> a.remoteInputs?.any { it.allowFreeFormInput } == true }

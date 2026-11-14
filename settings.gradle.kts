@@ -17,3 +17,4 @@ dependencyResolutionManagement {
 rootProject.name = "BrickAssistant"
 include(":app")
 include(":wear")
+include(":history")

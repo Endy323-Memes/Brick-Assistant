@@ -89,9 +89,11 @@ class AssistEntryActivity : Activity() {
         val panelCard = PanelCard(this)
         card.onPanel = { r -> panelCard.show(r) }
         panelCard.onInteract = { controller?.keepOpen() }
+        panelCard.onClose = { close() }
         stack = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL
-            addView(panelCard, android.widget.LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = (10 * d).toInt() })
+            // When room runs short (the keyboard is up), the readout gives way first (its rows scroll), so Brick's card and its buttons stay whole.
+            addView(panelCard, android.widget.LinearLayout.LayoutParams(-1, -2, 1f).apply { bottomMargin = (10 * d).toInt() })
             addView(card, android.widget.LinearLayout.LayoutParams(-1, -2))
         }
         root.addView(
@@ -106,6 +108,7 @@ class AssistEntryActivity : Activity() {
         card.onStartTyping = { controller?.startTyping() }
         card.onStartTalking = { if (hasPermission(Manifest.permission.RECORD_AUDIO)) controller?.startTalking() }
         card.onTyped = { t -> controller?.submitTyped(t) }
+        card.onAskAgain = { if (hasPermission(Manifest.permission.RECORD_AUDIO)) controller?.start() }
         card.onMute = { brick, unit -> (application as BrickApp).container.assistant.setMuted(brick, unit) }
         card.setOnClickListener {
             val c = controller
@@ -161,6 +164,9 @@ class AssistEntryActivity : Activity() {
         }
         card.animateIn()
         controller = AssistController(container, card) { close() }
+        // "Hey Brick" may have stopped (an app update ends it); the card is on screen, so Android lets it start again.
+        // It stays paused until this request's answer is finished.
+        if (container.settings.current.wakeWordEnabled) com.brick.assistant.wake.WakeWordService.start(this)
         // Start listening right away (not after the screen finishes opening) so the start of your command isn't lost.
         started = true
         begin()
@@ -299,6 +305,14 @@ class AssistEntryActivity : Activity() {
         c.topic = topic
         if (topic?.instant != null) {
             c.runInstant(topic)
+            return
+        }
+        // Brick History's "Ask again": a request a trusted app handed over, redeemed once by its token.
+        val ask = intent?.getStringExtra(EXTRA_ASK)?.let { com.brick.assistant.data.ControlProvider.redeemAsk(it) }
+        intent?.removeExtra(EXTRA_ASK)
+        if (ask != null) {
+            c.startTyping() // no microphone, and the card stays up for the answer (without covering it with the keyboard)
+            c.submitTyped(ask)
             return
         }
         // Battery's "Brick card" action: open ready to type (no microphone needed).
@@ -446,6 +460,8 @@ class AssistEntryActivity : Activity() {
         const val EXTRA_MODE = "brick_mode"
         /** A [com.brick.assistant.brain.Topic] id ("spotify", "night_sky"...): a one-purpose request from Battery. */
         const val EXTRA_TOPIC = "brick_topic"
+        /** A token from [com.brick.assistant.data.ControlProvider]'s "ask_token": runs that request typed. */
+        const val EXTRA_ASK = "brick_ask"
 
         /** Remembers how the assistant was last triggered (shown in Settings to help troubleshooting). */
         fun recordTrigger(context: Context, intent: Intent?) {

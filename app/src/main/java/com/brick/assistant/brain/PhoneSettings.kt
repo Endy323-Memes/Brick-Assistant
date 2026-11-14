@@ -81,7 +81,19 @@ enum class PhoneSetting(
     VOLUME("Volume", "VOLUME",
         "volume(?: settings| levels?| panel)?",
         "Settings > Sounds and vibration > Volume", null, SettingReach.DIRECT),
+    TOUCH_SOUNDS("Touch sounds", "TOUCH",
+        "touch (?:sounds?|tones?|clicks?)|tap(?:ping)? sounds?|click(?:ing)? sounds?|screen (?:tap|touch) sounds?|sounds? when (?:i )?(?:touch|tap)",
+        "Settings > Sounds and vibration > System sound > Touch interactions", null, SettingReach.DIRECT),
+    HAPTICS("Touch vibration", "HAPTIC",
+        "haptics?(?! settings| strength| intensity)|haptic feedback|touch vibrations?|vibrat(?:e|ion) (?:on|when) (?:i )?(?:touch|tap)|keyboard vibrations?|vibrat(?:e|ion) on (?:the )?keyboard",
+        "Settings > Sounds and vibration > System vibration > Touch interactions", null, SettingReach.DIRECT),
+    KEYPAD_TONES("Dialing keypad tones", "KEYPAD",
+        "dial(?:ing)? ?(?:pad|keypad) (?:tones?|sounds?)|keypad (?:tones?|sounds?|beeps?)|dial ?tones?|(?:tones?|beeps?) when (?:i )?dial",
+        "Settings > Sounds and vibration > System sound > Dialing keypad", null, SettingReach.DIRECT),
     ;
+
+    /** Only the main switches go on the phone settings overview (these smaller ones are asked for by name). */
+    val inOverview: Boolean get() = this != TOUCH_SOUNDS && this != HAPTICS && this != KEYPAD_TONES
 
     /** The pattern, compiled once. */
     val regex: Regex by lazy { Regex("\\b(?:$words)", RegexOption.IGNORE_CASE) }
@@ -135,6 +147,9 @@ object PhoneSettings {
                 it.currentInterruptionFilter > android.app.NotificationManager.INTERRUPTION_FILTER_ALL
             }
             PhoneSetting.SOUND_MODE, PhoneSetting.VOLUME -> null
+            PhoneSetting.TOUCH_SOUNDS -> Settings.System.getInt(cr, Settings.System.SOUND_EFFECTS_ENABLED, 1) == 1
+            PhoneSetting.HAPTICS -> Settings.System.getInt(cr, Settings.System.HAPTIC_FEEDBACK_ENABLED, 1) == 1
+            PhoneSetting.KEYPAD_TONES -> Settings.System.getInt(cr, Settings.System.DTMF_TONE_WHEN_DIALING, 1) == 1
         }
     } catch (_: Exception) {
         null
@@ -192,6 +207,11 @@ object PhoneSettings {
             PhoneSetting.AUTO_ROTATE -> Settings.System.putInt(cr, Settings.System.ACCELEROMETER_ROTATION, if (on) 1 else 0)
             PhoneSetting.ADAPTIVE_BRIGHTNESS -> Settings.System.putInt(cr, Settings.System.SCREEN_BRIGHTNESS_MODE,
                 if (on) Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC else Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL)
+            PhoneSetting.TOUCH_SOUNDS -> Settings.System.putInt(cr, Settings.System.SOUND_EFFECTS_ENABLED, if (on) 1 else 0).also { ok ->
+                if (ok) context.getSystemService(AudioManager::class.java)?.let { if (on) it.loadSoundEffects() else it.unloadSoundEffects() }
+            }
+            PhoneSetting.HAPTICS -> Settings.System.putInt(cr, Settings.System.HAPTIC_FEEDBACK_ENABLED, if (on) 1 else 0)
+            PhoneSetting.KEYPAD_TONES -> Settings.System.putInt(cr, Settings.System.DTMF_TONE_WHEN_DIALING, if (on) 1 else 0)
             PhoneSetting.DND -> context.getSystemService(android.app.NotificationManager::class.java)?.let { nm ->
                 if (!nm.isNotificationPolicyAccessGranted) false else {
                     nm.setInterruptionFilter(if (on) android.app.NotificationManager.INTERRUPTION_FILTER_PRIORITY else android.app.NotificationManager.INTERRUPTION_FILTER_ALL)
@@ -245,6 +265,8 @@ object PhoneSettings {
             PhoneSetting.DND -> listOf(Intent(Settings.ACTION_ZEN_MODE_PRIORITY_SETTINGS), Intent(Settings.ACTION_SOUND_SETTINGS))
             PhoneSetting.SOUND_MODE -> listOf(Intent(Settings.ACTION_SOUND_SETTINGS))
             PhoneSetting.VOLUME -> listOfNotNull(if (panel) Intent(Settings.Panel.ACTION_VOLUME) else null, Intent(Settings.ACTION_SOUND_SETTINGS))
+            PhoneSetting.TOUCH_SOUNDS, PhoneSetting.KEYPAD_TONES -> listOf(settings("Settings\$SecSoundSystemSoundSettingsActivity"), Intent(Settings.ACTION_SOUND_SETTINGS))
+            PhoneSetting.HAPTICS -> listOf(settings("Settings\$VibrationSettingsActivity"), Intent(Settings.ACTION_SOUND_SETTINGS))
         } + Intent(Settings.ACTION_SETTINGS)
     }
 

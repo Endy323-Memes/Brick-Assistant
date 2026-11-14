@@ -398,7 +398,7 @@ class Infographics(private val context: Context) {
     }
 
     /** A looked-up person, movie, show, platform...: its kind as the title, its facts, the summary, and its picture. */
-    fun lookup(r: LookupResult, openPage: () -> Unit, openResults: () -> Unit): Readout {
+    fun lookup(r: LookupResult, openPage: () -> Unit, openResults: () -> Unit, openLink: (String) -> Unit = {}): Readout {
         val rows = ArrayList<String>()
         rows += Box.wrap(Box.ascii(r.title), max = 2)
         r.description?.let { rows += Box.wrap(it, max = 2) }
@@ -406,14 +406,26 @@ class Infographics(private val context: Context) {
             rows += ""
             for ((label, value) in r.facts) rows += Box.wrap(value, first = Box.kv(label, ""), indent = 7, max = 3)
         }
-        r.answer?.let { rows += ""; rows += Box.wrap(it, "> ", indent = 2, max = 3) }
+        r.answer?.let { rows += ""; rows += Box.wrap(it, "> ", indent = 2, max = 4) }
+        if (r.list.isNotEmpty()) {
+            rows += ""
+            rows += r.listTitle ?: "MORE"
+            for (item in r.list) rows += Box.wrap(Box.ascii(item), "- ", indent = 2, max = 2)
+        }
+        if (r.summary.isNotBlank()) {
+            rows += ""
+            rows += Box.wrap(r.summary, max = 7)
+        }
         rows += ""
-        rows += Box.wrap(r.summary, max = 7)
-        rows += ""
-        rows += Box.kv("SOURCE", "Wikipedia, Wikidata")
-        val title = (r.kind?.label ?: "LOOKUP").uppercase(us)
-        return Readout(Box.build(title, rows), image = r.image,
-            controls = listOf(Control.Button("Wikipedia", openPage), Control.Button("Web results", openResults)))
+        rows += Box.wrap(r.sources.joinToString(", "), first = Box.kv("SOURCE", ""), indent = 7, max = 2)
+        val title = (r.heading ?: r.kind?.label ?: "LOOKUP").uppercase(us)
+        val pageName = if (r.url.contains("wikipedia.org")) "Wikipedia" else r.sources.firstOrNull() ?: "Open page"
+        val controls = buildList {
+            if (r.url.isNotBlank()) add(Control.Button(pageName, openPage))
+            r.links.forEach { (label, u) -> add(Control.Button(label) { openLink(u) }) }
+            add(Control.Button("Web results", openResults))
+        }
+        return Readout(Box.build(title, rows), image = r.image, controls = controls)
     }
 
     /** A unit conversion: the answer, the factor, and the same amount in a few nearby units. */
@@ -472,7 +484,7 @@ class Infographics(private val context: Context) {
             is Request.Alarm -> "ALARM"
             is Request.Timer, is Request.TimerControl, is Request.Stopwatch -> "TIMER"
             is Request.Setting -> { rows += Box.kv("SET", req.setting.name.lowercase().replace('_', ' ')); rows += Box.kv("TO", if (req.on) "on" else "off"); "BRICK" }
-            is Request.Device, is Request.PhoneSettingReq, is Request.SmartHome -> "DEVICE"
+            is Request.Device, is Request.PhoneSettingReq, is Request.SettingsPageReq, is Request.ScreenTimeoutReq, is Request.AppSettingsReq, is Request.SmartHome -> "DEVICE"
             is Request.Weather -> "WEATHER"
             is Request.Sky, is Request.PhotoSpots -> "SKY"
             is Request.Math, is Request.Convert -> "MATH"
@@ -495,7 +507,7 @@ class Infographics(private val context: Context) {
         rows += Box.kv("LETTERS", r.letterCount.toString())
         val vowels = r.word.count { it.lowercaseChar() in "aeiou" }
         rows += Box.kv("VOWELS", vowels.toString())
-        val doubles = Regex("([a-z])\\1").findAll(r.word.lowercase(us)).map { it.value }.toList()
+        val doubles = Patterns.get("([a-z])\\1").findAll(r.word.lowercase(us)).map { it.value }.toList()
         if (doubles.isNotEmpty()) rows += Box.kv("DOUBLE", doubles.joinToString(", "))
         if (r.soundsLike.isNotEmpty()) rows += Box.wrap(r.soundsLike.joinToString(", "), first = Box.kv("NOT", ""), indent = 7, max = 2)
         return Readout(Box.build("SPELL", rows))
@@ -723,10 +735,36 @@ class Infographics(private val context: Context) {
         return Readout(Box.build(Box.ascii(s.title).uppercase(us), rows), controls = controlsFor(s), refresh = { phoneSetting(s) })
     }
 
+    /** A page of the Settings app: where it is, and a button to go there. */
+    fun settingsPage(p: SettingsPage): Readout {
+        val rows = ArrayList<String>()
+        rows += Box.wrap(p.path, first = Box.kv("WHERE", ""), indent = 7, max = 4)
+        return Readout(Box.build(Box.ascii(p.title).uppercase(us), rows),
+            controls = listOf(Control.Button("Open ${p.title}") { SettingsPages.open(context, p) }))
+    }
+
+    /** The screen timeout: how long now, buttons for Samsung's choices, and where it is. */
+    fun screenTimeout(): Readout {
+        val now = ScreenTimeout.get(context)
+        val rows = ArrayList<String>()
+        rows += Box.kv("NOW", now?.let { ScreenTimeout.say(it) } ?: "unknown")
+        rows += Box.kv("CAN", if (PhoneSettings.canWrite(context)) "change it here" else "allow Brick first")
+        rows += ""
+        rows += Box.wrap(SettingsPage.SCREEN_TIMEOUT.path, first = Box.kv("WHERE", ""), indent = 7, max = 4)
+        val controls = ArrayList<Control>()
+        if (PhoneSettings.canWrite(context)) {
+            for (ms in ScreenTimeout.STEPS) controls += Control.Button(ScreenTimeout.short(ms)) { ScreenTimeout.set(context, ms) }
+        } else {
+            controls += Control.Button("Allow Brick to change it", open(PhoneSettings.writePermission(context)))
+        }
+        controls += Control.Button("Open in Settings") { SettingsPages.open(context, SettingsPage.SCREEN_TIMEOUT) }
+        return Readout(Box.build("SCREEN TIMEOUT", rows), controls = controls, refresh = ::screenTimeout)
+    }
+
     /** Every phone setting Brick knows, with its state, the switches Brick can flip, and a way to the rest. */
     fun phoneSettings(): Readout {
         val rows = ArrayList<String>()
-        for (s in PhoneSetting.entries) rows += Box.kv(s.tag, PhoneSettings.stateText(context, s))
+        for (s in PhoneSetting.entries.filter { it.inOverview }) rows += Box.kv(s.tag, PhoneSettings.stateText(context, s))
         rows += ""
         rows += Box.wrap("Ask \"where is NFC\" (or any of these) for its menu.", max = 3)
         val controls = ArrayList<Control>()
@@ -761,9 +799,10 @@ class Infographics(private val context: Context) {
             rows += Box.ascii(d.name).take(Box.W)
             val b = d.brightness
             rows += Box.kv("", (when (d.on) { true -> "on"; false -> "off"; null -> "?" }) + if (b != null && d.on == true) "  " + Box.percent(b) else "")
-            controls += Control.Toggle(d.name, { d.on == true }) { on -> Thread { Govee.power(key, d, on) }.start() }
+            // Changes show at once; Govee gets them in order, a slider's only once the drag settles (see Govee.setBrightness).
+            controls += Control.Toggle(d.name, { d.on == true }) { on -> Govee.setPower(key, d, on) }
             if (d.canDim) controls += Control.Slider("${d.name} brightness", get = { (d.brightness ?: 100).toFloat() }, range = 1f..100f,
-                format = { "${it.roundToInt()}%" }) { v -> d.brightness = v.roundToInt(); Thread { Govee.brightness(key, d, v.roundToInt()) }.start() }
+                format = { "${it.roundToInt()}%" }) { v -> Govee.setBrightness(key, d, v.roundToInt()) }
         }
         val apps = HomeApp.entries.filter { it.installed(context) }
         if (apps.isNotEmpty()) {

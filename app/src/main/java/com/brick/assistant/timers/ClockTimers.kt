@@ -1,5 +1,7 @@
 package com.brick.assistant.timers
 
+import com.brick.assistant.brain.Patterns
+
 import android.app.Notification
 import android.content.Context
 import android.content.Intent
@@ -33,9 +35,9 @@ object ClockTimers {
     fun canControl(): Boolean = BrickNotificationListener.instance != null
 
     private val words = mapOf(
-        TimerPress.PAUSE to Regex("^(?:pause|hold)$", RegexOption.IGNORE_CASE),
-        TimerPress.RESUME to Regex("^(?:resume|continue|start|restart|play)$", RegexOption.IGNORE_CASE),
-        TimerPress.CANCEL to Regex("^(?:cancel|stop|dismiss|reset|delete|end|turn off)$", RegexOption.IGNORE_CASE),
+        TimerPress.PAUSE to Patterns.get("^(?:pause|hold)$", true),
+        TimerPress.RESUME to Patterns.get("^(?:resume|continue|start|restart|play)$", true),
+        TimerPress.CANCEL to Patterns.get("^(?:cancel|stop|dismiss|reset|delete|end|turn off)$", true),
     )
 
     /** The Clock app's timer notifications (not the group header), newest first. */
@@ -56,7 +58,7 @@ object ClockTimers {
         val text = listOfNotNull(
             n.extras?.getCharSequence(Notification.EXTRA_TITLE), n.channelId, n.group, n.category,
         ).joinToString(" ")
-        return Regex("timer|countdown", RegexOption.IGNORE_CASE).containsMatchIn(text)
+        return Patterns.get("timer|countdown", true).containsMatchIn(text)
     }
 
     /** Whether a timer notification offers [press] right now (e.g. Resume only when paused). */
@@ -83,7 +85,7 @@ object ClockTimers {
         val e = sbn.notification.extras ?: return null
         val info = e.keySet().filter { it.contains("secondaryInfo", true) || it == Notification.EXTRA_TEXT || it == Notification.EXTRA_SUB_TEXT }
             .mapNotNull { e.get(it)?.toString() }.joinToString(" ")
-        return Regex("\\b(\\d{1,2}:\\d{2}\\s*(?:AM|PM|am|pm)?)").findAll(info).lastOrNull()?.groupValues?.get(1)
+        return Patterns.get("\\b(\\d{1,2}:\\d{2}\\s*(?:AM|PM|am|pm)?)").findAll(info).lastOrNull()?.groupValues?.get(1)
     }
 
     // ------------------------------------------------------------------ Brick's own record of the timers it set

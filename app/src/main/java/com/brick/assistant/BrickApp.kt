@@ -26,9 +26,17 @@ class BrickApp : Application() {
         com.brick.assistant.voice.OfflineSpeech.refresh(this) // so the first request already uses on-device speech
         com.brick.assistant.data.Palettes.init(this)
         com.brick.assistant.data.Places.init(this)
+        com.brick.assistant.brain.Prices.init(this) // store prices seen before, to spot a drop
+        com.brick.assistant.brain.WebCache.init(this) // web answers saved on the phone
+        com.brick.assistant.brain.HistoryLink.init(this) // chats saved in Brick History, when installed
         com.brick.assistant.overlay.PanelCard.fitWidth(this) // readouts as wide as the card
         container = AppContainer(this)
         ReminderScheduler.createChannel(this)
+        // Compile the request patterns in the background now, so the first request answers as fast as later ones.
+        Thread({ runCatching { com.brick.assistant.brain.IntentParser.parse("brick warm up the parser") } }, "parser-warmup").apply {
+            isDaemon = true
+            priority = Thread.MIN_PRIORITY
+        }.start()
     }
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {

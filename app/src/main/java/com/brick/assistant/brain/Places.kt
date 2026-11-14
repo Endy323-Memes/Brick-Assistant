@@ -85,7 +85,7 @@ class OpeningHours private constructor(private val week: Map<DayOfWeek, List<Int
             "mo" to DayOfWeek.MONDAY, "tu" to DayOfWeek.TUESDAY, "we" to DayOfWeek.WEDNESDAY, "th" to DayOfWeek.THURSDAY,
             "fr" to DayOfWeek.FRIDAY, "sa" to DayOfWeek.SATURDAY, "su" to DayOfWeek.SUNDAY,
         )
-        private val time = Regex("(\\d{1,2}):(\\d{2})\\s*-\\s*(\\d{1,2}):(\\d{2})\\+?")
+        private val time = Patterns.get("(\\d{1,2}):(\\d{2})\\s*-\\s*(\\d{1,2}):(\\d{2})\\+?")
 
         /** Null when the value can't be understood (seasonal rules, "sunrise", comments ...). */
         fun parse(raw: String?): OpeningHours? {
@@ -96,7 +96,7 @@ class OpeningHours private constructor(private val week: Map<DayOfWeek, List<Int
             for (ruleRaw in value.split(';', '|')) {
                 val rule = ruleRaw.trim()
                 if (rule.isEmpty()) continue
-                val firstTime = Regex("\\d{1,2}:\\d{2}|\\boff\\b|\\bclosed\\b", RegexOption.IGNORE_CASE).find(rule)
+                val firstTime = Patterns.get("\\d{1,2}:\\d{2}|\\boff\\b|\\bclosed\\b", true).find(rule)
                 val selector = (if (firstTime != null) rule.substring(0, firstTime.range.first) else rule).trim().trimEnd(':').trim()
                 val timesPart = if (firstTime != null) rule.substring(firstTime.range.first) else ""
                 // Days: empty selector = every day; skip rules for holidays, months, weeks ...
@@ -108,7 +108,7 @@ class OpeningHours private constructor(private val week: Map<DayOfWeek, List<Int
                         when {
                             p.isEmpty() -> {}
                             p == "ph" || p == "sh" -> {}
-                            Regex("^[a-z]{2}-[a-z]{2}$").matches(p) -> {
+                            Patterns.get("^[a-z]{2}-[a-z]{2}$").matches(p) -> {
                                 val a = dayCodes[p.take(2)]; val b = dayCodes[p.takeLast(2)]
                                 if (a == null || b == null) { ok = false } else {
                                     var d: DayOfWeek = a
@@ -123,7 +123,7 @@ class OpeningHours private constructor(private val week: Map<DayOfWeek, List<Int
                     out
                 }
                 if (days.isEmpty()) continue
-                val closed = Regex("^(?:off|closed)\\b", RegexOption.IGNORE_CASE).containsMatchIn(timesPart.trim())
+                val closed = Patterns.get("^(?:off|closed)\\b", true).containsMatchIn(timesPart.trim())
                 val spans = if (closed) emptyList() else time.findAll(timesPart).map { m ->
                     val (h1, m1, h2, m2) = m.destructured
                     val open = h1.toInt() * 60 + m1.toInt()
@@ -141,28 +141,87 @@ class OpeningHours private constructor(private val week: Map<DayOfWeek, List<Int
 }
 
 object PlaceHours {
-    class Place(val name: String, val lat: Double, val lon: Double, val hours: OpeningHours?, val rawHours: String?)
+    class Place(val name: String, val lat: Double, val lon: Double, val hours: OpeningHours?, val rawHours: String?,
+        val phone: String? = null, val address: String? = null, val website: String? = null)
 
     /** Finds [query] near the user (OpenStreetMap / Nominatim) and its posted opening hours. */
     suspend fun find(query: String, near: WeatherService.Place?): Place? = withContext(Dispatchers.IO) {
+        val places = places(query, near) ?: return@withContext null
+        fun dist(p: Place) = near?.let { milesBetween(it.lat, it.lon, p.lat, p.lon) } ?: 0.0
+        places.filter { it.hours != null }.minByOrNull(::dist) ?: places.minByOrNull(::dist)
+    }
+
+    /** The [nearest] place by the name asked for, and the nearest that lists a phone number ([withPhone]; can be the same). */
+    class Numbered(val nearest: Place, val withPhone: Place?)
+
+    /**
+     * [query] near you, nearest first: the address search in a small box around you, then wider ones (about 6, 15 and
+     * 40 miles), so "starbucks" is the one down the street, not a well-tagged one across town.
+     */
+    suspend fun findNumber(query: String, near: WeatherService.Place?): Numbered? = withContext(Dispatchers.IO) {
+        fun dist(p: Place) = near?.let { milesBetween(it.lat, it.lon, p.lat, p.lon) } ?: 0.0
+        // Said without the apostrophe ("mcdonalds", "lowes"): the map has "McDonald's", "Lowe's".
+        val spellings = listOfNotNull(query, possessive(query))
+        val found = (if (near != null) listOf(0.08, 0.2, 0.6).firstNotNullOfOrNull { d ->
+            spellings.firstNotNullOfOrNull { q -> places(q, near, d, 40, bounded = true)?.takeIf { it.isNotEmpty() } }
+        } else null) ?: spellings.firstNotNullOfOrNull { q -> places(q, near)?.takeIf { it.isNotEmpty() } } ?: return@withContext null
+        val nearest = found.minByOrNull(::dist) ?: return@withContext null
+        Numbered(nearest, if (nearest.phone != null) nearest else found.filter { it.phone != null }.minByOrNull(::dist))
+    }
+
+
+    /** "mcdonalds" -> "mcdonald's", "lowes near main street" -> "lowe's near main street"; null when there's nothing to try. */
+    fun possessive(query: String): String? {
+        if ('\'' in query) return null
+        val words = query.split(' ')
+        val i = words.indexOfFirst { it.length >= 4 && it.endsWith("s") && !it.endsWith("ss") && !it.endsWith("us") }.takeIf { it >= 0 } ?: return null
+        return words.toMutableList().also { it[i] = it[i].dropLast(1) + "'s" }.joinToString(" ")
+    }
+
+    /** "+1 215-555-0134" -> "(215) 555-0134"; other numbers as listed (the first, when several are). */
+    fun prettyPhone(raw: String): String {
+        val one = raw.split(';', ',', '/').first().trim()
+        val digits = one.filter { it.isDigit() }
+        val us = when {
+            digits.length == 11 && digits.startsWith("1") && (one.startsWith("+1") || !one.startsWith("+")) -> digits.drop(1)
+            digits.length == 10 && !one.startsWith("+") -> digits
+            else -> null
+        }
+        return us?.let { "(${it.take(3)}) ${it.substring(3, 6)}-${it.takeLast(4)}" } ?: one
+    }
+
+    /** What OpenStreetMap lists for [o]'s street address ("1200 Main Street, Springfield"). */
+    private fun address(o: org.json.JSONObject): String? {
+        val a = o.optJSONObject("address")
+        if (a != null) {
+            val street = listOfNotNull(a.optString("house_number").ifBlank { null }, a.optString("road").ifBlank { null }).joinToString(" ").ifBlank { null }
+            val town = listOf("city", "town", "village", "hamlet", "suburb").firstNotNullOfOrNull { a.optString(it).ifBlank { null } }
+            listOfNotNull(street, town).joinToString(", ").ifBlank { null }?.let { return it }
+        }
+        return o.optString("display_name").split(", ").drop(1).take(3).joinToString(", ").ifBlank { null }
+    }
+
+    /** OpenStreetMap's matches for [query] in a box [d] degrees around [near] ([bounded]: only inside it; else the box is a hint, then anywhere). */
+    private fun places(query: String, near: WeatherService.Place?, d: Double = 0.6, limit: Int = 10, bounded: Boolean = false): List<Place>? {
         fun search(bounded: Boolean): JSONArray? {
-            var url = "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=10&extratags=1&q=${Http.enc(query)}"
+            var url = "https://nominatim.openstreetmap.org/search?format=jsonv2&limit=$limit&extratags=1&addressdetails=1&q=${Http.enc(query)}"
             if (near != null) {
-                val d = 0.6
                 url += "&viewbox=${near.lon - d},${near.lat + d},${near.lon + d},${near.lat - d}"
                 if (bounded) url += "&bounded=1"
             }
             return httpText(url)?.let { runCatching { JSONArray(it) }.getOrNull() }
         }
-        val arr = (if (near != null) search(true)?.takeIf { it.length() > 0 } else null) ?: search(false) ?: return@withContext null
-        val places = (0 until arr.length()).mapNotNull { i ->
+        val arr = if (bounded) search(true) ?: return null
+            else (if (near != null) search(true)?.takeIf { it.length() > 0 } else null) ?: search(false) ?: return null
+        return (0 until arr.length()).mapNotNull { i ->
             val o = arr.optJSONObject(i) ?: return@mapNotNull null
-            val raw = o.optJSONObject("extratags")?.optString("opening_hours")?.takeIf { it.isNotBlank() }
+            val tags = o.optJSONObject("extratags")
+            fun tag(vararg keys: String) = keys.firstNotNullOfOrNull { k -> tags?.optString(k)?.takeIf { it.isNotBlank() } }
+            val raw = tag("opening_hours")
             val name = o.optString("name").ifBlank { o.optString("display_name").substringBefore(',') }.ifBlank { query }
-            Place(name, o.optDouble("lat"), o.optDouble("lon"), OpeningHours.parse(raw), raw)
+            Place(name, o.optDouble("lat"), o.optDouble("lon"), OpeningHours.parse(raw), raw,
+                phone = tag("phone", "contact:phone", "contact:mobile", "phone:mobile"), address = address(o), website = tag("website", "contact:website", "url"))
         }
-        fun dist(p: Place) = near?.let { milesBetween(it.lat, it.lon, p.lat, p.lon) } ?: 0.0
-        places.filter { it.hours != null }.minByOrNull(::dist) ?: places.minByOrNull(::dist)
     }
 
     private fun t(dt: LocalDateTime) = TimeParser.speakTime(dt.toLocalTime())
@@ -334,9 +393,9 @@ object PhotoSpots {
             fun v(k: String) = b.optJSONObject(k)?.optString("value")?.takeIf { it.isNotBlank() }
             val id = v("item") ?: continue
             val name = v("itemLabel") ?: continue
-            if (Regex("^Q\\d+$").matches(name)) continue // no English label
+            if (Patterns.get("^Q\\d+$").matches(name)) continue // no English label
             val (type, base) = wikidataTypes[v("type")?.substringAfterLast('/')] ?: continue
-            val m = Regex("Point\\(([-\\d.eE]+) ([-\\d.eE]+)\\)").find(v("coord") ?: continue) ?: continue
+            val m = Patterns.get("Point\\(([-\\d.eE]+) ([-\\d.eE]+)\\)").find(v("coord") ?: continue) ?: continue
             val lo = m.groupValues[1].toDouble()
             val la = m.groupValues[2].toDouble()
             val miles = milesBetween(lat, lon, la, lo)
@@ -403,9 +462,9 @@ object PhotoSpots {
         val d = s.description?.takeIf { it.length <= 60 }?.replaceFirstChar { it.lowercase() }
         val what = when {
             d == null -> article(s.type)
-            Regex("^(?:a|an|the)\\s", RegexOption.IGNORE_CASE).containsMatchIn(d) -> d
+            Patterns.get("^(?:a|an|the)\\s", true).containsMatchIn(d) -> d
             // Plural descriptions ("waterfalls on the Passaic River") take no article.
-            Regex("^\\S*[^s]s\\b").containsMatchIn(d) -> d
+            Patterns.get("^\\S*[^s]s\\b").containsMatchIn(d) -> d
             else -> article(d)
         }
         return (if (first) "The top spot is " else "Next up, ") + "${s.name}, $what, ${miles(s.miles)} away."

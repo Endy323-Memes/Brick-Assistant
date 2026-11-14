@@ -62,6 +62,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.brick.assistant.AssistantViewModel
+import com.brick.assistant.brain.HistoryLink
 import com.brick.assistant.brain.hasPermission
 import com.brick.assistant.reminders.ReminderScheduler
 import com.brick.assistant.voice.RobotFx
@@ -515,6 +516,80 @@ fun SettingsScreen(vm: AssistantViewModel, requestPermissions: (Array<String>) -
                 }
             }) { Text("Test key") }
             if (tmdbStatus.isNotEmpty()) Text(tmdbStatus, style = MaterialTheme.typography.bodySmall, color = RobotColor)
+            SwitchRow(
+                "Assume the newest one", s.assumeNewest,
+                "When you name a series of movies, games or books (\"where can I buy Avengers\", \"buy Zelda\") or a show with " +
+                    "several seasons, Brick picks the newest one instead of asking which one.",
+            ) { v -> update { it.copy(assumeNewest = v) } }
+        }
+
+        // ------------------------------------------------------------ Games and books
+        Section("Games and books", TermBlue, if (s.bggToken.isBlank()) "no board game ratings" else "BoardGameGeek on") {
+            OutlinedTextField(
+                value = s.bggToken,
+                onValueChange = { v -> update { it.copy(bggToken = v.trim()) } },
+                label = { Text("BoardGameGeek API token (optional)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Hint(
+                "Video game scores come from OpenCritic and Metacritic (through Wikidata) and book ratings from Open Library, " +
+                    "with no setup. Board game ratings come from BoardGameGeek, which needs a free token: sign in at " +
+                    "boardgamegeek.com, open boardgamegeek.com/applications, register an app and create a token.",
+            )
+        }
+
+        // ------------------------------------------------------------ Phobia filters
+        val phobiaSummary = when (s.phobias.size) {
+            0 -> "Off"
+            1 -> com.brick.assistant.brain.Phobias.of(s.phobias.first())?.name ?: "1 on"
+            else -> "${s.phobias.size} on"
+        }
+        Section("Phobia filters", TermBlue, phobiaSummary) {
+            Hint("Turn one on and Brick won't search for things about it: the question, or anything the search comes back with.")
+            for (p in com.brick.assistant.brain.Phobias.ALL) {
+                val on = p.key in s.phobias
+                SwitchRow(p.name, on, "Blocks searches about ${p.about}.") { v ->
+                    update {
+                        if (v) it.copy(phobias = it.phobias + p.key)
+                        else it.copy(phobias = it.phobias - p.key, phobiasAllowed = it.phobiasAllowed - p.key, phobiasLinks = it.phobiasLinks - p.key)
+                    }
+                }
+                if (on) {
+                    Column(Modifier.padding(start = 20.dp)) {
+                        SwitchRow("Allow the search", p.key in s.phobiasAllowed, "Answers still come through, but the card never shows a picture.") { v ->
+                            update { it.copy(phobiasAllowed = if (v) it.phobiasAllowed + p.key else it.phobiasAllowed - p.key) }
+                        }
+                        // Only matters while the search is blocked.
+                        if (p.key !in s.phobiasAllowed) {
+                            SwitchRow("Show web links", p.key in s.phobiasLinks, "A blocked search shows a Web results button, so you can look it up yourself.") { v ->
+                                update { it.copy(phobiasLinks = if (v) it.phobiasLinks + p.key else it.phobiasLinks - p.key) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------ Saved answers and history
+        val historyInstalled = remember { HistoryLink.installed(context) }
+        Section(
+            "Saved answers",
+            TermBlue,
+            (if (s.saveWebAnswers) "saving web answers" else "off") + if (historyInstalled) ", History on" else "",
+        ) {
+            SwitchRow(
+                "Save web answers",
+                s.saveWebAnswers,
+                "Repeat questions answer right away: prices are kept an hour, news 10 minutes, lookups and lists a day. " +
+                    "When you're offline, a copy up to a week old is used. Turning this off deletes the saved answers.",
+            ) { v -> update { it.copy(saveWebAnswers = v) } }
+            if (historyInstalled) {
+                Hint("Brick History keeps your queries, grouped by topic. Its own settings choose how long they stay.")
+                TermButton("Open Brick History", TermBlue) { HistoryLink.open(context) }
+            } else {
+                Hint("Install the Brick History app to keep your queries, grouped by topic, with a trash and cleanup rules.")
+            }
         }
 
         // ------------------------------------------------------------ Setup

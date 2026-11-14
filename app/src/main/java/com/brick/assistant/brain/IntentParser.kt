@@ -56,6 +56,8 @@ sealed class Request(val category: Category?) {
     data class FindPlace(val what: String, val kind: FindKind, val area: String?, val best: Boolean) : Request(Category.NAVIGATION)
     /** "When does Target close?" / "Is the library open?" */
     data class PlaceHours(val place: String, val ask: HoursAsk, val tomorrow: Boolean) : Request(Category.NAVIGATION)
+    /** "What's the phone number for Target?" / "How do I call the Olive Garden on Main Street?" [support]: a customer service line. */
+    data class PlaceNumber(val place: String, val support: Boolean = false) : Request(Category.NAVIGATION)
     /**
      * Night-sky darkness (Bortle / light pollution). [darkest] = find the darkest sky within [radiusMiles] of you
      * (or of [place]), or anywhere when [worldwide]; otherwise the sky quality at your location or at [place].
@@ -87,16 +89,55 @@ sealed class Request(val category: Category?) {
     data class Call(val who: String) : Request(Category.CALL)
     /** [explicit] = you asked to search ("search for", "look up", "google"); otherwise Brick only tries to answer. */
     data class Search(val query: String, val explicit: Boolean = false) : Request(Category.SEARCH)
+    /** Scores, results, champions, injuries, team news and schedules ("who won the eagles game", "is embiid playing tonight"). */
+    data class Sports(val ask: SportsAsk) : Request(Category.SEARCH)
+    /** Wars, battles and other events, and "today in history" ("what happened during ww2", "who won the war of 1812"). */
+    data class History(val ask: HistoryAsk) : Request(Category.SEARCH)
+    /** A character's traits and part in the story ("is walter white the protagonist", "is goku powerful", "describe sheldon's personality"). */
+    data class Character(val ask: CharacterAsk) : Request(Category.SEARCH)
+    /** An animal: lifespan, diet, habitat, prey, predators, discovery, extinction. */
+    data class Animal(val ask: AnimalAsk) : Request(Category.SEARCH)
     data class Math(val result: MathEvaluator.Result) : Request(Category.MATH)
     /** "How many milliseconds in a second", "5 feet to inches". */
     data class Convert(val conversion: Conversion) : Request(Category.MATH)
     /** "How do you spell necessary". */
     data class Spell(val word: String) : Request(Category.SEARCH)
+    /** News: a section ("tech", "world") or a subject to search ([query]). */
+    data class News(val topic: NewsTopic, val query: String? = null, val source: Publication? = null) : Request(Category.SEARCH)
+    /** "Best Godzilla movies", "worst Star Trek shows", "mid Taylor Swift songs", "good news from the Verge". [filter]: franchise, artist or outlet. */
+    data class Ranked(val kind: RankKind, val tier: Tier, val filter: String? = null, val count: Int? = null, val game: GameFilter? = null, val newest: Boolean = false) : Request(Category.SEARCH)
+    /** A video game, board game or book: its ratings, where to buy, play or read it. [kind] null: work out which from the title. */
+    data class WorkAsk(
+        val kind: WorkKind?, val ask: WorkAskKind, val title: String, val format: BuyFormat = BuyFormat.ANY, val audio: Boolean = false,
+        val used: Boolean = false, val platform: String? = null, val platformIds: List<String> = emptyList(),
+        val newest: Boolean = false, val exact: Boolean = false, val guess: Boolean = false,
+        /** "Is Hades on sale": lead with the sale (or say there isn't one). */
+        val sale: Boolean = false,
+    ) : Request(Category.SEARCH)
+
+    /** Games on sale now: at one PC store or all, under a price, only well-reviewed ones, or [console] (which Brick can't list). */
+    data class Deals(
+        val store: String? = null, val under: Double? = null, val good: Boolean = false, val console: String? = null,
+        /** Movies or TV seasons (CheapCharts) instead of games, with a genre id and release years. */
+        val video: LookupKind? = null, val genre: String? = null, val years: Pair<Int?, Int?>? = null,
+    ) : Request(Category.SEARCH)
+    /** "What's the newest Zelda game?", "next Stormlight book", "latest Brandon Sanderson novel". */
+    data class LatestWork(val name: String, val kind: WorkKind, val next: Boolean = false) : Request(Category.SEARCH)
+    /** "What's the newest Godzilla movie?" / "the latest season of The Bear" / "when's the next Dune movie". */
+    data class Latest(val name: String, val kind: LookupKind, val next: Boolean = false) : Request(Category.SEARCH)
     /** Ratings, where to watch / buy / listen, and song credits ("what is dune rated", "who produced this song"). [title] null = the song playing now. */
     data class MediaAsk(
         val kind: MediaAskKind, val title: String?, val artist: String? = null, val video: LookupKind? = null,
         val role: CreditRole = CreditRole.ALL, val instrument: String? = null, val free: Boolean = false,
         val format: BuyFormat = BuyFormat.ANY, val service: String? = null, val rent: Boolean = false,
+        /** "season 2 of ...": that season (0 = all of them). */
+        val season: Int? = null,
+        /** "the newest avengers movie": the newest one of a series, without asking which. */
+        val newest: Boolean = false,
+        /** Already one exact movie (picked from a "which one?" question): no series check. */
+        val exact: Boolean = false,
+        /** Nothing said it's a movie or show ("where can I buy avengers"): a plain search answers if it isn't one. */
+        val guess: Boolean = false,
     ) : Request(if (kind == MediaAskKind.LISTEN || kind == MediaAskKind.BUY_SONG || kind == MediaAskKind.CREDITS) Category.MUSIC else Category.SEARCH)
     data class Weather(
         val city: String?,
@@ -158,6 +199,12 @@ sealed class Request(val category: Category?) {
     data class Device(val op: DeviceOp, val percent: Int? = null, val target: String? = null) : Request(Category.DEVICE)
     /** A phone setting: switch it ([on], null = flip or just show), its state, or where it is. [setting] null = all of them. */
     data class PhoneSettingReq(val setting: PhoneSetting?, val on: Boolean? = null, val ask: SettingAsk = SettingAsk.SET, val open: Boolean = false) : Request(Category.DEVICE)
+    /** A page of the Settings app: open it, or (where) say where it is. */
+    data class SettingsPageReq(val page: SettingsPage, val where: Boolean = false) : Request(Category.DEVICE)
+    /** The screen timeout: set it ([ms]), a step longer or shorter ([step]), or say it / where it is. */
+    data class ScreenTimeoutReq(val ms: Long? = null, val step: Int = 0, val ask: SettingAsk = SettingAsk.SET, val open: Boolean = false) : Request(Category.DEVICE)
+    /** One app's settings page (App info or its notifications). */
+    data class AppSettingsReq(val app: String, val page: AppPage) : Request(Category.DEVICE)
     /** Smart home: lights and plugs ([target] as said), on/off, brightness, a color, or a home app to open. */
     data class SmartHome(val target: String?, val on: Boolean? = null, val brightness: Int? = null, val color: String? = null, val app: HomeApp? = null) : Request(Category.DEVICE)
     data class Chat(val reply: String) : Request(Category.CHAT)
@@ -209,13 +256,29 @@ object IntentParser {
      * flashlight"), so you don't need the exact words.
      */
     fun parse(raw: String): Request {
-        parseSavedPlace(clean(raw))?.let { return it }
+        val base = clean(raw)
+        parseSavedPlace(base)?.let { return it }
+        // "would you call light yagami a genius" is about a character, not a phone call.
+        if (rx("^(?:would|do|did|could) (?:you|people|fans) (?:call|consider|describe) ").containsMatchIn(raw.trim().lowercase()))
+            Characters.parse(raw.replace(rx("[?!.,]"), " "))?.let { return it }
+        // Everyday wording first ("get me up at 8" is an alarm, not directions to "up at 8").
+        val early = Colloquial.early(base)
+        if (!early.equals(base, ignoreCase = true) && early.isNotBlank()) {
+            val r = parseStrict(early)
+            if (r !is Request.Search) return r
+        }
+        // "gas near me", "best tacos nearby": nearby places, when it's something Brick can look for.
+        Colloquial.nearby(base)?.let { n -> parseFindPlace(n)?.let { return it } }
         val first = parseStrict(raw)
         if (first !is Request.Search || first.explicit) return first
-        val relaxed = relax(clean(raw))
-        if (relaxed.isBlank() || relaxed.equals(clean(raw), ignoreCase = true)) return first
-        val second = parseStrict(relaxed)
-        return if (second is Request.Search) first else second
+        // Not understood as said: try without filler words, then with broader everyday wording ("throw on some drake").
+        val relaxed = relax(base)
+        for (candidate in listOf(relaxed, Colloquial.late(base), Colloquial.late(relaxed), Colloquial.early(relaxed)).distinct()) {
+            if (candidate.isBlank() || candidate.equals(base, ignoreCase = true)) continue
+            val second = parseStrict(candidate)
+            if (second !is Request.Search) return second
+        }
+        return first
     }
 
     private val fillers = listOf(
@@ -310,19 +373,37 @@ object IntentParser {
         if (rx("^(?:hi|hello|hey|yo|greetings)(?:\\s+(?:there|brick))?$").matches(s)) {
             return Request.Chat("Hello. Awaiting your request.")
         }
-        if (rx("^(?:thanks|thank you)(?:\\s+.*)?$").matches(s)) {
+        if (rx("^(?:thanks|thank you|thx|thank u|cheers|appreciate it|much appreciated)(?:\\s+.*)?$").matches(s)) {
             return Request.Chat("You are welcome.")
         }
+        Colloquial.chat(s)?.let { return Request.Chat(it) }
 
         parseSetting(s)?.let { return it }
         parseVisualizer(s)?.let { return it }
         Spelling.parse(s)?.let { return Request.Spell(it) }
         Units.parse(s)?.let { return Request.Convert(it) }
-        MediaGuide.parse(s)?.let { return it }
+        parsePhoneNumber(s)?.let { return it }
+        // Before sports: "what do eagles eat" is the bird.
+        Animals.parse(s)?.let { return it }
+        // Before the video-game parsers: "the knicks game" is a ballgame.
+        com.brick.assistant.brain.Sports.parse(s)?.let { return it }
+        Characters.parse(s)?.let { return it }
+        Works.parseDeals(s)?.let { return it }
+        Works.parseSale(s)?.let { return it }
+        com.brick.assistant.brain.Ranked.parse(s)?.let { return it }
+        Works.parseLatest(s)?.let { return it }
+        Works.parseAsk(s)?.let { return it }
+        com.brick.assistant.brain.History.parse(s)?.let { return it }
+        News.parse(s)?.let { return it }
+        Franchise.parseLatest(s)?.let { return it }
+        MediaGuide.parse(s)?.let { return MediaGuide.extras(it, s) }
         parseAlarm(s)?.let { return it }
         parseTime(s)?.let { return it }
         parseDevice(s)?.let { return it }
         parseSmartHome(s)?.let { return it }
+        parseScreenTimeout(s)?.let { return it }
+        parseAppSettings(s)?.let { return it }
+        parseSettingsPage(s)?.let { return it }
         parsePhoneSetting(s)?.let { return it }
         parseNote(raw, s)?.let { return it }
         parseDiscord(raw)?.let { return it }
@@ -359,8 +440,9 @@ object IntentParser {
         // Nothing matched exactly, but it's clearly about sky darkness ("bortle?", "light pollution tonight"):
         // answer that rather than searching the web.
         skyByKeywords(s)?.let { return it }
-        MediaGuide.loose(s)?.let { return it }
-        val explicit = rx("^(?:search\\b|look\\s+up\\b|google\\b|find\\s+out\\b|search\\s+the\\s+web\\b|web\\s+search\\b|bing\\b)").containsMatchIn(s)
+        MediaGuide.loose(s)?.let { return MediaGuide.extras(it, s) }
+        MediaGuide.guessBuy(s)?.let { return it }
+        val explicit = rx("^(?:search\\b|look\\s+up\\b|google\\b|duck\\s?duck\\s?go\\b|ddg\\b|find\\s+out\\b|search\\s+the\\s+web\\b|web\\s+search\\b|bing\\b)").containsMatchIn(s)
         // Searched as said: "the twelve days of christmas", not "the 12 days of christmas".
         return Request.Search(searchQuery(clean(raw, numbers = false)), explicit)
     }
@@ -630,7 +712,7 @@ object IntentParser {
     )
 
     // Just the place on the map: "where's work on the map", "show me mom's house".
-    private val MAP_ONLY = Regex("\\b(?:map|maps|show me|show|where(?:'s| is)|locate|pin|pull up)\\b")
+    private val MAP_ONLY = Patterns.get("\\b(?:map|maps|show me|show|where(?:'s| is)|locate|pin|pull up)\\b")
 
     // Other requests that may mention a saved place ("text mom I'm heading home", "remind me to go to work at 8").
     private val NOT_TRAVEL = Regex(
@@ -686,6 +768,52 @@ object IntentParser {
         .replace(rx("^(?:nearest|closest|nearby|local)\\s+"), "")
         .replace(rx("\\s+(?:near me|nearby|around here|by me|close to me)$"), "")
         .trim()
+
+    // Numbers that are yours or a person's ("my number", "mom's number"), or not phone numbers at all.
+    private val notABusiness = Regex("^(?:my|your|our|his|her|their|me|you|him|them|mom|mum|dad|mother|father|grandma|grandpa|nana|papa|wife|husband|son|daughter|brother|sister|" +
+        "uncle|aunt|auntie|cousin|boyfriend|girlfriend|bf|gf|babe|baby|bestie|best friend|friend|boss|it|this|that|the (?:day|week|year|song|episode|season|player|jersey)|a|an|lucky|random)\\b", RegexOption.IGNORE_CASE)
+
+    /** "what's the phone number for target", "walmart's number", "how do i contact comcast", "customer service number for amazon". */
+    fun parsePhoneNumber(s: String): Request? {
+        val t = s.lowercase().trim().replace(rx("\\s+(?:please|real quick|for me)$"), "")
+        val support = rx("\\b(?:customer service|customer support|support|help ?line|helpline|toll free|1 800|800 number|corporate|headquarters|hq|main office)\\b").containsMatchIn(t)
+        val number = "(?:phone\\s+number|phone\\s*#|phone\\s+no|telephone(?:\\s+number)?|contact\\s+(?:number|info|information|details)|customer\\s+(?:service|support)\\s+(?:number|line|phone(?:\\s+number)?)|support\\s+(?:number|line|phone(?:\\s+number)?)|" +
+            "help\\s*line|toll\\s+free\\s+number|1\\s*800\\s+number|800\\s+number|corporate\\s+(?:number|phone(?:\\s+number)?)|main\\s+(?:number|line|office\\s+number)|phone|number)"
+        fun make(raw: String, company: Boolean = false): Request? {
+            val place = placeName(raw.trim()
+                .replace(rx("^(?:the\\s+)?(?:customer service|customer support|support|corporate)\\s+(?:for|of|at)\\s+"), "")
+                .replace(rx("\\s+(?:customer service|customer support|support|corporate|headquarters|hq)$"), "")
+                .removeSuffix("'s").removeSuffix("s'").trim())
+            if (place.isBlank() || notABusiness.containsMatchIn(place) || rx("\\b(?:my|your|our)\\b").containsMatchIn(place) ||
+                place.split(' ').size > 8 || place.none { it.isLetter() }) return null
+            return Request.PlaceNumber(place, support || company)
+        }
+        // "what's the phone number for target", "number for the pizza place on main street", "give me the contact info of comcast".
+        rx("^(?:what(?:'s| is| are)|what're|whats|give me|get me|tell me|find|find me|look up|search for|get|i need|need|can i (?:get|have)|can you (?:give me|get|find|look up|tell me)|could you (?:give me|get|find|look up|tell me)|do you (?:have|know)|send me|show me)?\\s*" +
+            "(?:the\\s+|a\\s+)?$number\\s+(?:for|of|to|at)\\s+(.+)$").find(t)?.let { m ->
+            // A bare "number for" needs a place-like target ("the number for target" yes, "a number for 3 people" no).
+            return make(m.groupValues[1])
+        }
+        // "target phone number", "walmart's number", "what's olive garden's phone number".
+        // (Not a bare "phone" at the end: "silence my phone", "best games for my phone".)
+        val numberAtEnd = number.replace("|phone|number)", "|number)")
+        rx("^(?:what(?:'s| is)|whats|give me|get me|tell me|find|look up|i need|can i get|can you (?:give me|get|find|look up))?\\s*(?:the\\s+)?(.+?)(?:'s|s')?\\s+$numberAtEnd$").find(t)?.let { m ->
+            // Bare "number" only with a possessive ("walmart's number"): "what's the lucky number" isn't a phone number.
+            if (rx("(?:^|\\s)number$").containsMatchIn(t) && !rx("(?:'s|s')\\s+number$").containsMatchIn(t) && !rx("\\b(?:phone|contact|support|service|main|corporate|800|telephone)\\s+number$").containsMatchIn(t)) return null
+            return make(m.groupValues[1])
+        }
+        // "how do i call comcast", "how can i contact amazon customer service", "how do i reach the dmv by phone".
+        rx("^how (?:do|can|would|should) i (?:(?:call|contact|phone|get in touch with|get ahold of|get a hold of|talk to someone at|speak to someone at)\\s+(.+?)(?:\\s+by phone|\\s+on the phone)?|reach\\s+(.+?)\\s+(?:by phone|on the phone))$").find(t)?.let { m ->
+            // "Contact comcast" / "get in touch with amazon" asks for the company; "call best buy" the store near you.
+            val company = rx("^how (?:do|can|would|should) i (?:contact|get in touch with|get ahold of|get a hold of|reach) ").containsMatchIn(t)
+            return make(m.groupValues[1].ifBlank { m.groupValues[2] }, company)
+        }
+        // "what number do i call for comcast", "what number should i call to reach the irs".
+        rx("^what (?:number|phone number) (?:do i|should i|can i|would i) (?:call|dial) (?:for|to reach|to contact|to get|at)?\\s*(.+)$").find(t)?.let { m ->
+            return make(m.groupValues[1])
+        }
+        return null
+    }
 
     fun parseHours(s: String): Request? {
         if (rx("^(?:play|put on|listen to|shuffle|how many|set|start)\\b").containsMatchIn(s)) return null
@@ -793,7 +921,7 @@ object IntentParser {
     /** "obscure my location by 500 miles" -> (true, 500); "use a fake location" -> (true, null); else (false, null). */
     fun obscures(s: String): Pair<Boolean, Int?> {
         val m = rx(OBSCURE).find(s.lowercase().trim()) ?: return false to null
-        val n = m.groupValues[1].replace(Regex("[, ]"), "").toDoubleOrNull() ?: return true to null
+        val n = m.groupValues[1].replace(Patterns.get("[, ]"), "").toDoubleOrNull() ?: return true to null
         val miles = if (m.groupValues[2].startsWith("k")) n * 0.621371 else n
         return true to miles.toInt().coerceIn(OBSCURE_MIN_MILES, OBSCURE_MAX_MILES)
     }
@@ -1092,7 +1220,7 @@ object IntentParser {
         "\\b(?:on|enable|enabled|activate|start|allow|use|go (?:into|in)|switch (?:to|into)|put (?:it |me |the phone |my phone )?(?:in|into|on)|" +
             "need|want|give me|bring back|resume|unpause|connect|power up|fire up|light up)\\b",
     )
-    private val TOGGLE_WORDS = Regex("\\b(?:toggle|flip|switch)\\b")
+    private val TOGGLE_WORDS = Patterns.get("\\b(?:toggle|flip|switch)\\b")
     private val WHERE_WORDS = Regex(
         "\\b(?:where(?:'s| is| are| do i| can i| would i| should i| in)|how (?:do|can|would|should|to) (?:i |you )?(?:find|open|reach|change|turn|switch|enable|disable|set|get to the)|" +
             "how to (?:find|turn|switch|enable|disable|change)|which (?:menu|page|setting|screen)|path to|location of|show me where|navigate to the|find the .*setting)\\b",
@@ -1100,7 +1228,7 @@ object IntentParser {
     private val STATUS_WORDS = Regex(
         "^(?:is|are|was|am i|check|tell me if|do i have)\\b|\\b(?:status|state|is it on|is it off|currently)\\b|^what(?:'s| is) (?:my |the )?(?:current )?\\S+ (?:on|set to|at)\\b",
     )
-    private val OPEN_WORDS = Regex("\\b(?:open|show|pull up|bring up|go to|take me to|launch|get me to|settings?|menu|page|panel|controls?|options)\\b")
+    private val OPEN_WORDS = Patterns.get("\\b(?:open|show|pull up|bring up|go to|take me to|launch|get me to|settings?|menu|page|panel|controls?|options)\\b")
 
     /** Other requests that may mention a setting: "text mom my location", "remind me to turn off wifi", "play music on my speaker". */
     private val NOT_SETTING = Regex(
@@ -1110,7 +1238,7 @@ object IntentParser {
     )
 
     /** "what is NFC", "what does airplane mode do": a question about it, not a request to change it. */
-    private val DEFINITION = Regex("^(?:what|who) (?:is|are|does|do) (?:an? |the )?[a-z0-9 -]+? (?:mean|do|stand for|for)$|^(?:what|who) (?:is|are) (?:an? )?[a-z0-9 -]+$")
+    private val DEFINITION = Patterns.get("^(?:what|who) (?:is|are|does|do) (?:an? |the )?[a-z0-9 -]+? (?:mean|do|stand for|for)$|^(?:what|who) (?:is|are) (?:an? )?[a-z0-9 -]+$")
 
     /**
      * Phone settings in any wording: "kill the wifi", "can you put my phone in airplane mode", "I need my hotspot",
@@ -1118,7 +1246,7 @@ object IntentParser {
      * settings". The setting's name can be anywhere (see [PhoneSetting.words] for what each one is called).
      */
     fun parsePhoneSetting(raw: String): Request? {
-        val s = raw.lowercase().replace(Regex("\\s+(?:please|for me|real quick|right now|now|thanks)$"), "").trim()
+        val s = raw.lowercase().replace(Patterns.get("\\s+(?:please|for me|real quick|right now|now|thanks)$"), "").trim()
         if (NOT_SETTING.containsMatchIn(s)) return null
         // All of them: "show my phone settings", "quick settings", "control center".
         if (rx("^(?:(?:show|open|pull up|bring up|give me|what are|check)\\s+)?(?:me\\s+)?(?:all\\s+)?(?:my|the)?\\s*(?:phone(?:'s)?|quick|device|system)\\s+(?:settings|toggles|controls|switches)(?:\\s+(?:panel|overview|page|menu))?$|" +
@@ -1177,6 +1305,131 @@ object IntentParser {
         }
     }
 
+    // ---- The screen timeout, any page of the Settings app, and one app's settings.
+
+    private val TIMEOUT_LOOSE = Regex(
+        "\\b(?:screen|display)\\b.*\\b(?:(?:stays?|stay|staying|kept|keep) (?:\\w+ )?(?:on|awake|lit)|(?:turns?|goes|go|shuts?|shut|turn|switch(?:es)?) off|sleeps?|dims?|locks?)\\b|" +
+            "\\b(?:keep|leave|let) (?:the |my )?(?:screen|display|phone) (?:on|awake|lit)\\b",
+    )
+    private val LONGER = Regex(
+        "\\btoo (?:fast|quick(?:ly)?|soon|early|short)\\b|\\b(?:longer|more time|increase|raise|extend|lengthen|up)\\b",
+    )
+    private val SHORTER = Regex(
+        "\\btoo (?:slow(?:ly)?|long|late)\\b|\\b(?:shorter|less time|decrease|lower|reduce|shorten|down|faster|quicker|sooner)\\b",
+    )
+
+    /**
+     * The screen timeout: "set my screen timeout to 2 minutes", "keep the screen on for 10 minutes", "my screen
+     * turns off too fast", "make the display stay on longer", "how long does my screen stay on", "where's screen timeout".
+     */
+    fun parseScreenTimeout(raw: String): Request? {
+        val s = raw.lowercase().trim()
+        if (NOT_SETTING.containsMatchIn(s)) return null
+        val named = SettingsPage.SCREEN_TIMEOUT.regex.containsMatchIn(s) || rx("\\btime ?out\\b").containsMatchIn(s) && rx("\\b(?:screen|display|phone)\\b").containsMatchIn(s)
+        if (!named && !TIMEOUT_LOOSE.containsMatchIn(s)) return null
+        if (rx("\\b(?:timer|alarm|remind|song|music|video|youtube|game|sleep timer|always on|aod)\\b").containsMatchIn(s)) return null
+        if (WHERE_WORDS.containsMatchIn(s)) return Request.ScreenTimeoutReq(ask = SettingAsk.WHERE)
+        val never = rx("\\b(?:never|forever|always|all the time|indefinitely|max(?:imum)?|longest)\\b").containsMatchIn(s)
+        ScreenTimeout.duration(s)?.let { return Request.ScreenTimeoutReq(it) }
+        if (never) return Request.ScreenTimeoutReq(ScreenTimeout.MAX)
+        if (rx("\\b(?:min(?:imum)?|shortest)\\b").containsMatchIn(s)) return Request.ScreenTimeoutReq(ScreenTimeout.STEPS.first())
+        when {
+            rx("\\btoo (?:fast|quick(?:ly)?|soon|early|short)\\b").containsMatchIn(s) -> return Request.ScreenTimeoutReq(step = 1)
+            rx("\\btoo (?:slow(?:ly)?|long|late)\\b").containsMatchIn(s) -> return Request.ScreenTimeoutReq(step = -1)
+            LONGER.containsMatchIn(s) -> return Request.ScreenTimeoutReq(step = 1)
+            SHORTER.containsMatchIn(s) -> return Request.ScreenTimeoutReq(step = -1)
+        }
+        // Without a time or a direction, the loose wording ("turn off the screen", "lock the screen") is something else.
+        if (!named) return null
+        if (STATUS_WORDS.containsMatchIn(s) || rx("^(?:what|how long|how many)\\b").containsMatchIn(s)) return Request.ScreenTimeoutReq(ask = SettingAsk.STATUS)
+        return Request.ScreenTimeoutReq(ask = SettingAsk.STATUS, open = OPEN_WORDS.containsMatchIn(s.replace(SettingsPage.SCREEN_TIMEOUT.regex, " ")) ||
+            rx("\\b(?:change|adjust|set|edit|tweak|fix)\\b").containsMatchIn(s))
+    }
+
+    private val APP_PAGE = "app info|app information|app settings|application settings|app details|settings|notification settings|notifications settings|" +
+        "notifications|permissions|storage|cache|battery(?: usage)?|data usage"
+
+    /** Names that are the phone itself, not an app: "settings for my phone". */
+    private val NOT_APP = Patterns.get("^(?:my |the |this )?(?:phone|device|system|android|samsung|galaxy|apps?|all(?: my)? apps|everything|it|screen|home ?screen|lock ?screen)$|^(?:my|the|this|your|me|our|its|open|show|show me|find|launch|go to|pull up|bring up|get me to|take me to|i need|i want|change|check)(?: (?:my|the))?$")
+
+    /**
+     * One app's settings page: "spotify app settings", "app info for discord", "notification settings for gmail",
+     * "spotify permissions", "clear the cache for chrome", "uninstall tiktok", "turn off notifications from instagram".
+     */
+    fun parseAppSettings(raw: String): Request? {
+        val s = raw.lowercase().trim()
+        if (NOT_SETTING.containsMatchIn(s) && !rx("^(?:delete|cancel)").containsMatchIn(s)) return null
+        val open = "(?:(?:open|show(?: me)?|go to|take me to|pull up|bring up|get me to|get to|i need|i want|where(?:'s| is| are)|find)\\s+)?(?:the\\s+|my\\s+)?"
+        var name: String? = null
+        var what: String? = null
+        rx("^$open($APP_PAGE)\\s+(?:for|of|on|in|from)\\s+(?:the\\s+|my\\s+)?(.+?)(?:\\s+app)?$").find(s)?.let { what = it.groupValues[1]; name = it.groupValues[2] }
+        if (name == null) rx("^$open(.+?)(?:\\s+app)?(?:'s)?\\s+(app info|app information|app settings|app details|notification settings|notifications settings|permissions|storage|cache|battery usage)$").find(s)?.let {
+            name = it.groupValues[1]; what = it.groupValues[2]
+        }
+        if (name == null) rx("^(?:clear|delete|wipe) (?:the |all )?(?:cache|data|storage|app data) (?:for|of|on|from|in) (?:the |my )?(.+?)(?: app)?$").find(s)?.let { name = it.groupValues[1]; what = "storage" }
+        if (name == null) rx("^(?:force (?:stop|close|quit)|uninstall|remove|delete) (?:the |my )?(.+?) app$|^(?:force (?:stop|close|quit)|uninstall) (?:the |my )?(.+?)$").find(s)?.let {
+            name = it.groupValues[1].ifBlank { it.groupValues[2] }; what = "app info"
+        }
+        if (name == null) rx("^(?:turn off|turn on|stop|block|mute|silence|disable|enable|allow|change|manage) (?:all )?(?:the )?notifications (?:for|from|on|in) (?:the |my )?(.+?)(?: app)?$|" +
+                "^(?:stop|keep) (.+?) from (?:sending|showing|giving) (?:me )?notifications$").find(s)?.let {
+            name = it.groupValues[1].ifBlank { it.groupValues[2] }; what = "notifications"
+        }
+        val n = name?.trim()?.removeSuffix(" app")?.trim() ?: return null
+        if (n.isEmpty() || NOT_APP.matches(n) || n.split(' ').size > 4) return null
+        // A setting or a Settings page ("location permissions", "lock screen notifications") isn't an app.
+        if (PhoneSetting.find(n) != null || SettingsPage.find(n)?.first?.let { it != SettingsPage.MAIN } == true) return null
+        val page = when {
+            what!!.startsWith("notification") -> AppPage.NOTIFICATIONS
+            what == "permissions" -> AppPage.PERMISSIONS
+            what == "storage" || what == "cache" -> AppPage.STORAGE
+            what!!.startsWith("battery") -> AppPage.BATTERY
+            else -> AppPage.INFO
+        }
+        return Request.AppSettingsReq(n, page)
+    }
+
+    /** "show me", "my", "the": words that don't change what a Settings request means. */
+    private val PAGE_FILLER = Regex(
+        "\\b(?:i|me|my|the|a|an|to|for|of|on|in|is|are|do|does|have|any|there|what's|what|which|phone(?:'s)?|device|android|samsung|galaxy|hey|can|could|would|will|you|please|settings?|page|menu|" +
+            "screen|section|options?|go|get|take|bring|pull|up|open|show|launch|let's|lets|let|just|quick(?:ly)?|real|now|want|need|see|find|look|at|into|where|it|that|this)\\b",
+    )
+    private val PAGE_ACTION = Regex(
+        "\\b(?:change|adjust|set|setup|set up|manage|edit|customi[sz]e|tweak|configure|turn|switch|fix|update|check|view|make|bigger|smaller|larger|increase|decrease|" +
+            "raise|lower|add|remove|enable|disable|use|help|on|off|pick|choose|select|rename|reset|clear|free|block|unblock|allow|stop)\\b",
+    )
+
+    /**
+     * Any page of the phone's Settings app, in any wording: "open display settings", "take me to developer options",
+     * "where do I change my wallpaper", "I want to change my ringtone", "make the text bigger", "check for software
+     * updates", "battery settings", "show me the about phone page". The on/off switches go to [parsePhoneSetting].
+     */
+    fun parseSettingsPage(raw: String): Request? {
+        val s = raw.lowercase().replace(Patterns.get("\\s+(?:please|for me|real quick|right now|now|thanks)$"), "").trim()
+        if (NOT_SETTING.containsMatchIn(s)) return null
+        val (page, len) = SettingsPage.find(s) ?: return null
+        // A switch named at least as fully ("wifi", "dark mode") is parsePhoneSetting's.
+        PhoneSetting.find(s)?.let { ps ->
+            val psLen = ps.regex.findAll(s).maxOf { it.value.length }
+            if (page == SettingsPage.MAIN || psLen >= len) return null
+        }
+        if (rx("\\bbrick\\b").containsMatchIn(s)) return null // Brick's own settings
+        // Driver's effects, the stopwatch and timers have their own "reset", "effects" and "settings".
+        if (rx("\\b(?:driver|lpf|hpf|reverb|spatiali[sz]e|eq|equali[sz]er|bass boost|preset|crossfeed|compressor|limiter|stopwatch|timers?|alarms?|lap|counter|score)\\b").containsMatchIn(s)) return null
+        if (DEFINITION.matches(s) && !rx("\\b(?:my|on|off)\\b").containsMatchIn(s)) return null
+        if (rx("^(?:why|who|when|define|tell me about|explain)\\b").containsMatchIn(s)) return null
+        // "read my notifications" / "any notifications?" are for reading them, not their settings.
+        if ((page == SettingsPage.NOTIFICATIONS || page == SettingsPage.APP_NOTIFICATIONS) &&
+            !rx("\\b(?:settings?|menu|page|options|style|pop ?ups?|history|bar|access|permissions|change|manage|configure|customi[sz]e|turn|adjust|where|how)\\b").containsMatchIn(s)) return null
+        if (WHERE_WORDS.containsMatchIn(s)) return Request.SettingsPageReq(page, where = true)
+        val rest =s.replace(Regex(page.regex.pattern + "\\w*", RegexOption.IGNORE_CASE), " ")
+        val asked = OPEN_WORDS.containsMatchIn(s) || PAGE_ACTION.containsMatchIn(s) ||
+            rest.replace(PAGE_FILLER, " ").isBlank()
+        if (!asked) return null
+        // The main page only for a plain "open settings" (not "settings for ..." or "brightness settings").
+        if (page == SettingsPage.MAIN && !rx("^(?:(?:open|show(?: me)?|go to|take me to|pull up|bring up|launch|get me to)\\s+)?(?:the\\s+|my\\s+)?(?:android\\s+)?settings(?:\\s+(?:app|menu|page))?$").matches(s)) return null
+        return Request.SettingsPageReq(page)
+    }
+
     private val HOME_THING = Regex(
         "\\b(?:lights|lamps?|bulbs?|leds?|led strips?|light strips?|strip lights?|smart plugs?|plugs?|outlets?|fans?|govee|smart home|home devices|" +
             "smart devices|my devices)\\b|\\b(?:the|my|all) (?:[a-z]+ ){0,2}light\\b(?! pollution| mode| theme| show)",
@@ -1187,7 +1440,7 @@ object IntentParser {
      * "make the lights blue", "is the desk lamp on", "show my smart home", "open Google Home".
      */
     fun parseSmartHome(raw: String): Request? {
-        val s = raw.lowercase().replace(Regex("\\s+(?:please|for me|real quick|right now|now)$"), "").trim()
+        val s = raw.lowercase().replace(Patterns.get("\\s+(?:please|for me|real quick|right now|now)$"), "").trim()
         if (NOT_SETTING.containsMatchIn(s)) return null
         val app = HomeApp.named(s)
         if (rx("^(?:open|launch|start|go to|pull up)\\s+(?:the\\s+)?(?:${HomeApp.entries.joinToString("|") { it.words }})(?:\\s+app)?$").matches(s)) {
@@ -1209,9 +1462,9 @@ object IntentParser {
             .replace(Regex("\\b(?:can you|could you|would you|please|turn|switch|set|make|put|change|dim|brighten|kill|shut|cut|the|my|to|at|on|off|up|down|" +
                 "lights?|lamps?|bulbs?|leds?|strips?|plugs?|outlets?|fans?|all|of|in|percent|brightness|brighter|dimmer|color|colour|is|are|it|them|" +
                 "enable|disable|activate|deactivate|govee|smart|home|google|nest|devices?)\\b"), " ")
-            .replace(Regex("\\b\\d{1,3}\\b|%"), " ")
+            .replace(Patterns.get("\\b\\d{1,3}\\b|%"), " ")
             .let { t -> color?.let { t.replace(it, " ") } ?: t }
-            .replace(Regex("\\s+"), " ").trim().ifBlank { null }
+            .replace(Patterns.get("\\s+"), " ").trim().ifBlank { null }
         return Request.SmartHome(
             target,
             on = if (off) false else if (on) true else null,
@@ -1245,18 +1498,40 @@ object IntentParser {
         return Request.OpenApp(name)
     }
 
-    fun parseYouTube(s: String): Request? {
-        rx("^(?:play|put on|watch|listen to|show me)\\s+(.+?)\\s+(?:on|in|from|using)\\s+(?:the\\s+)?youtube(\\s+music)?(?:\\s+app)?$").find(s)?.let {
-            return Request.YouTube(it.groupValues[1].trim(), play = true, music = it.groupValues[2].isNotBlank())
+    fun parseYouTube(s0: String): Request? {
+        // "i wanna watch...", "can you pull up...": the wanting goes, the asking stays.
+        val s = s0.replace(rx("^(?:i (?:want to|wanna|would like to|'d like to|need to|gotta)|let me|lemme|let's|lets|can (?:i|we)|could (?:i|we))\\s+"), "").trim()
+        val find = "search up|search for|search|look up|look for|lookup|find me|go find|find|pull up|bring up|get me|show me|show|google|check out|check|get"
+        val video = "(?:some\\s+|a\\s+|any\\s+|an\\s+|the\\s+|good\\s+|funny\\s+)*(?:youtube\\s+)?(?:videos?|vids?|music videos?|clips?|tutorials?|youtube videos?)"
+        fun q(t: String) = t.trim().removeSuffix(" please").trim()
+        rx("^(?:play|put on|throw on|stick on|queue up|queue|crank|blast|watch|listen to|show me)\\s+(.+?)\\s+(?:on|in|from|using|off|off of)\\s+(?:the\\s+)?youtube(\\s+music)?(?:\\s+app)?$").find(s)?.let {
+            return Request.YouTube(q(it.groupValues[1]), play = true, music = it.groupValues[2].isNotBlank())
         }
-        rx("^(?:search|look up|find|look for)\\s+(.+?)\\s+(?:on|in)\\s+youtube(\\s+music)?$").find(s)?.let {
-            return Request.YouTube(it.groupValues[1].trim(), play = false, music = it.groupValues[2].isNotBlank())
+        rx("^(?:$find)\\s+(.+?)\\s+(?:on|in|from|using)\\s+(?:the\\s+)?youtube(\\s+music)?(?:\\s+app)?$").find(s)?.let {
+            return Request.YouTube(q(it.groupValues[1]), play = false, music = it.groupValues[2].isNotBlank())
+        }
+        // "open youtube and search lofi", "go on youtube and look up speedruns".
+        rx("^(?:open(?: up)?|go (?:on|to|onto)|hop on|get on|jump on|launch)\\s+youtube(\\s+music)?\\s+(?:and\\s+)?(?:$find|play|watch|type(?: in)?)\\s+(?:for\\s+)?(.+)$").find(s)?.let {
+            val play = rx("\\s(?:play|watch)\\s").containsMatchIn(" " + s + " ") && !rx("\\b(?:search|look|find)\\b").containsMatchIn(s)
+            return Request.YouTube(q(it.groupValues[2]), play = play, music = it.groupValues[1].isNotBlank())
         }
         rx("^(?:search\\s+)?youtube(\\s+music)?\\s+(?:search\\s+)?(?:for\\s+)?(.+)$").find(s)?.let {
-            return Request.YouTube(it.groupValues[2].trim(), play = false, music = it.groupValues[1].isNotBlank())
+            return Request.YouTube(q(it.groupValues[2]), play = false, music = it.groupValues[1].isNotBlank())
         }
-        rx("^(?:find|show me|search for|look up|pull up)\\s+(?:some\\s+|a\\s+)?(?:youtube\\s+)?(?:videos?|music videos?|clips?)\\s+(?:of|about|for|on|from|by)\\s+(.+)$").find(s)?.let {
-            return Request.YouTube(it.groupValues[1].trim(), play = false, music = false)
+        // "find me a video about how to tie a tie", "any videos on black holes", "is there a youtube video on sourdough".
+        rx("^(?:(?:$find)\\s+|(?:are|is) there\\s+|got\\s+|you got\\s+)?$video\\s+(?:of|about|for|on|from|by|showing|explaining|that (?:show|shows|explain|explains))\\s+(.+)$").find(s)?.let {
+            val t = q(it.groupValues[1])
+            if (!rx("^(?:my|i|me)\\b").containsMatchIn(t)) return Request.YouTube(t, play = false, music = false)
+        }
+        // "golden retriever videos", "lofi on youtube".
+        val notA = rx("^(?:my|your|our|the|all|recent|latest|new|old|saved|downloaded|delete|open|share|send|edit|record|take|play|show|is|are|what|when|how|why|who|can|does|do|did)\\b|\\b(?:my|your)\\b")
+        rx("^(.+?)\\s+(?:on|in)\\s+youtube(\\s+music)?$").find(s)?.let {
+            val t = q(it.groupValues[1])
+            if (!notA.containsMatchIn(t)) return Request.YouTube(t, play = false, music = it.groupValues[2].isNotBlank())
+        }
+        rx("^(.+?)\\s+(?:youtube\\s+)?(?:videos|vids|clips|tutorials?|youtube videos?)$").find(s)?.let {
+            val t = q(it.groupValues[1])
+            if (!notA.containsMatchIn(t) && !rx("^(?:music|any|some|funny|good|short)$").matches(t)) return Request.YouTube(t, play = false, music = false)
         }
         return null
     }
@@ -1382,10 +1657,23 @@ object IntentParser {
         if (rx("\\b(?:cold|hot|warm|chilly|freezing|nice) outside\\b|what's it like outside|how is it outside|need a (?:jacket|coat)").containsMatchIn(s)) {
             return Request.Weather(null, rx("\\btomorrow\\b").containsMatchIn(s), if (rx("\\b(?:cold|hot|warm|chilly|freezing)\\b").containsMatchIn(s)) WeatherAspect.TEMPERATURE else WeatherAspect.GENERAL)
         }
-        if (!rx("\\b(?:weather|forecast|temperature|temp|raining|rain|rainfall|snowing|snow|snowfall|sunny|humid|humidity|umbrella|uv|u v|sunscreen|sunburn|wind|windy|breezy|gusts?|how (?:hot|cold|warm) is it)\\b").containsMatchIn(s)) return null
+        // The day's high and low: "what's the high and low for temperature today", "today's high", "how low will it get tonight".
+        val highLow = rx("^(?:what(?:'s| is| are| will be| was)|tell me|give me|check)?\\s*(?:the\\s+)?(?:today's\\s+|tomorrow's\\s+|tonight's\\s+|the day's\\s+)?(?:expected\\s+)?" +
+            "(?:highs?|lows?)(?:\\s+(?:and|&|or)\\s+(?:the\\s+)?(?:highs?|lows?))?(?:\\s+(?:temperatures?|temps?))?" +
+            "(?:\\s+(?:for|of|on|in)\\s+(?:the\\s+)?(?:temperatures?|temps?|the day|day|weather))?(?:\\s+(?:going to be|gonna be|be|look like|like))?" +
+            "(?:\\s+(?:for\\s+)?(?:today|tomorrow|tonight|this afternoon|this week|this weekend|the week|the weekend))?(?:\\s+(?:in|for|at)\\s+[a-z][a-z .'-]+)?$" +
+            "|^how (?:high|low|warm|cold) (?:will|is|does) (?:it|the temperature|the temp) (?:get|go|gonna get|going to get|drop|be)\\b.*$" +
+            "|\\b(?:high|low)s?\\s+(?:and|&)\\s+(?:high|low)s?\\b.*\\b(?:temperature|temp|weather|today|tomorrow|tonight)\\b" +
+            "|\\b(?:temperature|temp)\\s+(?:highs?|lows?)\\b|\\b(?:highs?|lows?)\\s+(?:temperature|temp)s?\\b")
+            .containsMatchIn(s) &&
+            // Not a bare "low" (volume) or a stock, price, score or tide.
+            !rx("^(?:the\\s+)?(?:highs?|lows?)$").matches(s) &&
+            !rx("\\b(?:stocks?|shares?|price|prices|market|crypto|bitcoin|btc|eth|score|scores|tides?|blood pressure|sugar|bp|heart rate|gas prices?)\\b").containsMatchIn(s)
+        if (!highLow &&!rx("\\b(?:weather|forecast|temperature|temp|raining|rain|rainfall|snowing|snow|snowfall|sunny|humid|humidity|umbrella|uv|u v|sunscreen|sunburn|wind|windy|breezy|gusts?|how (?:hot|cold|warm) is it)\\b").containsMatchIn(s)) return null
         val tomorrow = rx("\\btomorrow\\b").containsMatchIn(s)
         val amount = rx("\\b(?:how much|how many (?:inches|centimeters|millimeters)|amount of|inches of|centimeters of|millimeters of|accumulation|rainfall|snowfall|total)\\b").containsMatchIn(s)
         val aspect = when {
+            highLow -> WeatherAspect.HIGH_LOW
             rx("\\b(?:humid|humidity)\\b").containsMatchIn(s) -> WeatherAspect.HUMIDITY
             rx("\\b(?:temperature|temp|degrees|how (?:hot|cold|warm))\\b").containsMatchIn(s) -> WeatherAspect.TEMPERATURE
             rx("\\b(?:uv|u v|ultraviolet|sunscreen|sunburn|sun index)\\b").containsMatchIn(s) -> WeatherAspect.UV
@@ -1406,6 +1694,8 @@ object IntentParser {
         ).find(s)
         var city = cityMatch?.groupValues?.get(1)?.trim()
         if (city != null && rx("^(?:the\\s+.*|my\\s+area|here|outside|my location|today|tomorrow|this week|this weekend|next week|weekend|week)$").matches(city)) city = null
+        // "the high and low for temperature today": a weather word is never a city.
+        if (city != null && rx("\\b(?:temperatures?|temps?|weather|forecast|rain|snow|wind|humidity|uv|highs?|lows?|degrees|tonight|day|conditions|outside|out)\\b").containsMatchIn(city)) city = null
         return Request.Weather(city?.takeIf { it.isNotBlank() }, tomorrow && span == WeatherSpan.DAY, aspect, span = span)
     }
 
@@ -1631,7 +1921,7 @@ object IntentParser {
 
     private fun searchQuery(s: String): String {
         val q = s.replace(
-            rx("^(?:search\\s+(?:the\\s+)?(?:web|internet|online|google)\\s+for|search\\s+for|search|look\\s+up|google|find\\s+out|find)\\s+"),
+            rx("^(?:search\\s+(?:the\\s+)?(?:web|internet|online|google|duck\\s?duck\\s?go)\\s+for|search\\s+for|search|look\\s+up|google|duck\\s?duck\\s?go|ddg|find\\s+out|find)\\s+"),
             "",
         ).trim()
         return q.ifBlank { s }

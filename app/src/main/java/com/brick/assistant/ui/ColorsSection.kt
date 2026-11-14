@@ -1,5 +1,7 @@
 package com.brick.assistant.ui
 
+import com.brick.assistant.brain.Patterns
+
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -136,7 +138,7 @@ fun ColorsSection() {
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TermButton("export", TermBlue) { exporter.launch("brick-palette-${current.name.lowercase().replace(Regex("[^a-z0-9]+"), "-")}.json") }
+                TermButton("export", TermBlue) { exporter.launch("brick-palette-${current.name.lowercase().replace(Patterns.get("[^a-z0-9]+"), "-")}.json") }
                 TermButton("import", DavidColor) { importer.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) }
                 if (Palettes.custom.any { it.name == current.name }) {
                     TermButton("delete", TermRed) { Palettes.delete(current); status = "deleted the preset." }

@@ -38,7 +38,8 @@ internal object Http {
         c.setRequestProperty("User-Agent", UA)
         c.setRequestProperty("Accept", "application/json")
         for ((k, v) in headers) c.setRequestProperty(k, v)
-        val body = if (c.responseCode == 200) c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) } else null
+        val code = c.responseCode
+        val body = if (code == 200) c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) } else null
         c.disconnect()
         body?.let { JSONObject(it) }
     } catch (e: Exception) {
@@ -53,18 +54,66 @@ internal object Http {
     private const val CACHE_MS = 10 * 60_000L
     private const val CACHE_MAX = 64
 
-    /** [getJson], but a repeat within 10 minutes comes from memory. Older answers are deleted, never reused. */
+    /**
+     * [getJson], but a repeat within 10 minutes comes from memory, and (with [WebCache] on) a repeat within the
+     * answer's saved time comes from the phone's storage. When the network fails, a saved copy up to a week old is used.
+     */
     fun getJsonCached(url: String, headers: Map<String, String> = emptyMap()): JSONObject? {
         val now = System.currentTimeMillis()
         synchronized(cache) {
             cache.values.removeAll { now - it.at >= CACHE_MS }
             cache[url]?.let { return it.json }
         }
-        val fresh = getJson(url, headers) ?: return null
+        WebCache.read(url, WebCache.ttl(url))?.let { saved ->
+            runCatching { JSONObject(saved) }.getOrNull()?.let { j ->
+                synchronized(cache) { cache[url] = Cached(j, now) }
+                return j
+            }
+        }
+        val body = getBody(url, headers)
+        val fresh = body?.let { runCatching { JSONObject(it) }.getOrNull() }
+            ?: return WebCache.read(url, WebCache.STALE_MS)?.let { runCatching { JSONObject(it) }.getOrNull() }
+        WebCache.write(url, body)
         synchronized(cache) { cache[url] = Cached(fresh, now) }
         return fresh
     }
 
+    /** The raw body of a 200 answer, or null. */
+    private fun getBody(url: String, headers: Map<String, String>): String? = try {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 6000
+        c.readTimeout = 8000
+        c.setRequestProperty("User-Agent", UA)
+        c.setRequestProperty("Accept", "application/json")
+        for ((k, v) in headers) c.setRequestProperty(k, v)
+        val body = if (c.responseCode == 200) c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) } else null
+        c.disconnect()
+        body
+    } catch (e: Exception) {
+        null
+    }
+
+    /** [getText] with the phone's saved copy (news feeds: 10 minutes; a week-old copy when offline). */
+    fun getTextCached(url: String): String? {
+        WebCache.read(url, WebCache.ttl(url))?.let { return it }
+        val body = getText(url) ?: return WebCache.read(url, WebCache.STALE_MS)
+        WebCache.write(url, body)
+        return body
+    }
+
+
+    /** A plain text answer (an RSS feed), or null. */
+    fun getText(url: String): String? = try {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 6000
+        c.readTimeout = 8000
+        c.setRequestProperty("User-Agent", UA)
+        val body = if (c.responseCode == 200) c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) } else null
+        c.disconnect()
+        body
+    } catch (e: Exception) {
+        null
+    }
 
     /** A JSON array answer (lrclib.net's search), or null. */
     fun getJsonArray(url: String): org.json.JSONArray? = try {
@@ -90,7 +139,7 @@ object ContactsLookup {
     fun canRead(context: Context) = context.hasPermission(Manifest.permission.READ_CONTACTS)
 
     fun find(context: Context, rawQuery: String): Contact? {
-        val query = rawQuery.trim().replace(Regex("^(?:my|the)\\s+", RegexOption.IGNORE_CASE), "")
+        val query = rawQuery.trim().replace(Patterns.get("^(?:my|the)\\s+", true), "")
         if (query.isEmpty()) return null
         if (query.none { it.isLetter() } && query.count { it.isDigit() } >= 3) {
             return Contact(query, query.filter { it.isDigit() || it == '+' })
@@ -178,8 +227,8 @@ object SearchService {
     }
 
     private fun shorten(text: String): String {
-        val clean = text.replace(Regex("\\s*\\([^)]*\\)"), "").replace(Regex("\\s+"), " ").trim()
-        val sentences = Regex("(?<=[.!?])\\s+").split(clean)
+        val clean = text.replace(Patterns.get("\\s*\\([^)]*\\)"), "").replace(Patterns.get("\\s+"), " ").trim()
+        val sentences = Patterns.get("(?<=[.!?])\\s+").split(clean)
         var out = ""
         for (s in sentences) {
             if (out.isNotEmpty() && (out.length + s.length > 320)) break

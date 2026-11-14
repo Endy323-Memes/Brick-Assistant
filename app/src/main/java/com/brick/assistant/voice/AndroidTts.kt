@@ -1,5 +1,7 @@
 package com.brick.assistant.voice
 
+import com.brick.assistant.brain.Patterns
+
 import android.content.Context
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
@@ -78,7 +80,7 @@ class AndroidTts(context: Context, engine: String? = googleEngineIfInstalled(con
         val preferred = listOf("en-us-x-tpd-local", "en-us-x-iom-local", "en-us-x-iol-local",
             "en-us-x-tpd-network", "en-us-x-iom-network", "en-us-x-iol-network")
         val pick = preferred.firstOrNull { it in names }
-            ?: names.firstOrNull { Regex("(?i)(^|[-_ ])male|#male|_m\\d|-m\\d").containsMatchIn(it) && !it.contains("female", true) }
+            ?: names.firstOrNull { Patterns.get("(?i)(^|[-_ ])male|#male|_m\\d|-m\\d").containsMatchIn(it) && !it.contains("female", true) }
             ?: ""
         if (names.isNotEmpty()) cachedMale = pick
         return pick
@@ -93,7 +95,7 @@ class AndroidTts(context: Context, engine: String? = googleEngineIfInstalled(con
         val preferred = listOf("en-us-x-sfg-local", "en-us-x-tpf-local", "en-us-x-iob-local", "en-us-x-iog-local",
             "en-us-x-tpc-local", "en-us-x-sfg-network", "en-us-x-tpf-network", "en-us-x-iob-network")
         val pick = preferred.firstOrNull { it in names }
-            ?: names.firstOrNull { Regex("(?i)female|#female|_f\\d|-f\\d").containsMatchIn(it) }
+            ?: names.firstOrNull { Patterns.get("(?i)female|#female|_f\\d|-f\\d").containsMatchIn(it) }
             ?: ""
         if (names.isNotEmpty()) cachedFemale = pick
         return pick

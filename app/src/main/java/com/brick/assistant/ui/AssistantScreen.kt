@@ -1,5 +1,7 @@
 package com.brick.assistant.ui
 
+import com.brick.assistant.brain.Patterns
+
 import android.Manifest
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.keyframes
@@ -288,7 +290,7 @@ fun TermButton(label: String, color: Color, onClick: () -> Unit) {
     )
 }
 
-private val PANEL_LABEL = Regex("^[A-Z][A-Z/-]{1,6}(?= |$)")
+private val PANEL_LABEL = Patterns.get("^[A-Z][A-Z/-]{1,6}(?= |$)")
 
 /**
  * A terminal readout (the night sky panel): the frame dim, the "[ TITLE ]" in Brick's color, row labels in the

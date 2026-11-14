@@ -39,10 +39,10 @@ data class LyricsDoc(
  */
 object Lyrics {
     private val us = Locale.US
-    private val LINE_TAG = Regex("\\[(\\d{1,3}):(\\d{1,2})(?:[.:](\\d{1,3}))?]")
-    private val WORD_TAG = Regex("<(\\d{1,3}):(\\d{1,2})(?:[.:](\\d{1,3}))?>")
-    private val META_TAG = Regex("^\\[(?:ti|ar|al|au|by|length|offset|re|ve|#)[^]]*]\\s*$", RegexOption.IGNORE_CASE)
-    private val OFFSET_TAG = Regex("^\\[offset:\\s*([+-]?\\d+)\\s*]", RegexOption.IGNORE_CASE)
+    private val LINE_TAG = Patterns.get("\\[(\\d{1,3}):(\\d{1,2})(?:[.:](\\d{1,3}))?]")
+    private val WORD_TAG = Patterns.get("<(\\d{1,3}):(\\d{1,2})(?:[.:](\\d{1,3}))?>")
+    private val META_TAG = Patterns.get("^\\[(?:ti|ar|al|au|by|length|offset|re|ve|#)[^]]*]\\s*$", true)
+    private val OFFSET_TAG = Patterns.get("^\\[offset:\\s*([+-]?\\d+)\\s*]", true)
 
     private fun ms(m: MatchResult): Long {
         val min = m.groupValues[1].toLong()
@@ -91,7 +91,7 @@ object Lyrics {
                 val w = rest.substring(m.range.last + 1, end).trim()
                 if (w.isNotEmpty()) words += LyricWord(ms(m) - offset, w)
             }
-            val clean = WORD_TAG.replace(rest, " ").replace(Regex("\\s+"), " ").trim()
+            val clean = WORD_TAG.replace(rest, " ").replace(Patterns.get("\\s+"), " ").trim()
             for (t in times) out += LyricLine(t - offset, clean, if (times.size == 1) words else emptyList())
         }
         return out.sortedBy { it.timeMs }
@@ -114,11 +114,11 @@ object Lyrics {
 
     /** Song names often carry extras the lyric sites don't: "Title (Remastered 2011)", "Title - Radio Edit". */
     fun cleanTitle(t: String) = t
-        .replace(Regex("\\s*[(\\[][^)\\]]*\\b(?:remaster(?:ed)?|live|radio edit|edit|version|mono|stereo|deluxe|bonus|explicit|clean|feat\\.?|ft\\.?|with)\\b[^)\\]]*[)\\]]", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("\\s+-\\s+(?:\\d{4} )?(?:remaster(?:ed)?|live|radio edit|single version|mono|stereo)\\b.*$", RegexOption.IGNORE_CASE), "")
+        .replace(Patterns.get("\\s*[(\\[][^)\\]]*\\b(?:remaster(?:ed)?|live|radio edit|edit|version|mono|stereo|deluxe|bonus|explicit|clean|feat\\.?|ft\\.?|with)\\b[^)\\]]*[)\\]]", true), "")
+        .replace(Patterns.get("\\s+-\\s+(?:\\d{4} )?(?:remaster(?:ed)?|live|radio edit|single version|mono|stereo)\\b.*$", true), "")
         .trim()
 
-    fun mainArtist(a: String?) = a?.split(Regex("\\s*(?:,|&| feat\\.? | ft\\.? | x | and )\\s*", RegexOption.IGNORE_CASE))?.firstOrNull()?.trim()?.ifBlank { null }
+    fun mainArtist(a: String?) = a?.split(Patterns.get("\\s*(?:,|&| feat\\.? | ft\\.? | x | and )\\s*", true))?.firstOrNull()?.trim()?.ifBlank { null }
 
     /** Driver's own lyrics (read-only "get_lyrics"); null when Driver doesn't have them or can't answer that yet. */
     suspend fun fromDriver(context: Context, title: String, artist: String?): LyricsDoc? {
@@ -135,7 +135,7 @@ object Lyrics {
         return listOf("Music", "Download", "Lyrics", "Music/Lyrics", "Documents/Lyrics", "Android/media").map { File(root, it) }.filter { it.isDirectory }
     }
 
-    private fun norm(s: String) = s.lowercase(us).replace(Regex("[^a-z0-9]+"), " ").trim()
+    private fun norm(s: String) = s.lowercase(us).replace(Patterns.get("[^a-z0-9]+"), " ").trim()
 
     /**
      * A .lrc (or .txt) file on the phone named after the song ("Title.lrc", "Artist - Title.lrc"). Only when Brick

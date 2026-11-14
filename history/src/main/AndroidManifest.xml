@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Pictures on saved answers (album covers, posters) are loaded from the web. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The daily cleanup (trash rules) keeps running after a restart. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <queries>
+        <!-- Brick: its colors, and "Talk to Brick" / "Ask again". -->
+        <package android:name="com.brick.assistant" />
+    </queries>
+
+    <application
+        android:name=".HistoryApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.History">
+
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize|stateHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Brick sends each request and answer here. Only Brick (or an app signed with the same key) is let in. -->
+        <provider
+            android:name=".data.LogProvider"
+            android:authorities="com.brick.history.log"
+            android:exported="true" />
+
+        <service
+            android:name=".data.CleanupJob"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+    </application>
+</manifest>

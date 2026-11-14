@@ -238,7 +238,7 @@ enum class WeatherProvider(
                 a.chance = maxOf(a.chance ?: 0, chance)
                 if ("snow" in sky || "flurries" in sky) a.snow = true
                 // "10 to 20 mph": the top of the range.
-                Regex("(\\d+)(?!.*\\d)").find(q.optString("windSpeed"))?.let { m -> a.wind = maxOf(a.wind ?: 0, m.value.toInt()) }
+                Patterns.get("(\\d+)(?!.*\\d)").find(q.optString("windSpeed"))?.let { m -> a.wind = maxOf(a.wind ?: 0, m.value.toInt()) }
                 if (a.from == null) a.from = q.optString("windDirection").ifBlank { null }
                 q.optJSONObject("relativeHumidity")?.int("value")?.let { a.humidity = it }
             }

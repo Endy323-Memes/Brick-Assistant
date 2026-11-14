@@ -30,7 +30,7 @@ object NotificationReader {
         "me.proton.android.mail", "com.readdle.spark", "com.edison.android.mail",
     )
 
-    private val SPACES = Regex("\\s+")
+    private val SPACES = Patterns.get("\\s+")
 
     fun hasAccess(): Boolean = BrickNotificationListener.instance != null
 
@@ -120,7 +120,7 @@ object CalendarReader {
      * "my vacation" finds "Vacation in Maine", "dentist" finds "Dentist appointment".
      */
     fun find(context: Context, what: String, past: Boolean = false, now: LocalDateTime = LocalDateTime.now()): CalEvent? {
-        val words = what.lowercase().split(Regex("[^a-z0-9']+"))
+        val words = what.lowercase().split(Patterns.get("[^a-z0-9']+"))
             .filter { it.length > 1 && it !in setOf("my", "the", "our", "a", "an", "next", "upcoming", "appointment", "event") }
             .map { it.removeSuffix("'s") }
         if (words.isEmpty()) return null
@@ -234,7 +234,7 @@ object NotesWriter {
 
 object YouTubeSearch {
     private const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
-    private val videoRenderer = Regex("\"videoRenderer\":\\{\"videoId\":\"([A-Za-z0-9_-]{11})\"")
+    private val videoRenderer = Patterns.get("\"videoRenderer\":\\{\"videoId\":\"([A-Za-z0-9_-]{11})\"")
 
     /** The top regular video (not an ad or a short) for [query], or null. */
     suspend fun firstVideoId(query: String): String? = withContext(Dispatchers.IO) {
@@ -273,11 +273,11 @@ object YouTubeSearch {
         }
     }
 
-    private fun norm(s: String) = s.lowercase().replace(Regex("[^a-z0-9 ]"), " ").replace(Regex("\\s+"), " ").trim()
+    private fun norm(s: String) = s.lowercase().replace(Patterns.get("[^a-z0-9 ]"), " ").replace(Patterns.get("\\s+"), " ").trim()
 
     /** "39M subscribers" / "1.2K" -> 39000000 / 1200. */
     fun count(text: String): Long {
-        val m = Regex("([\\d.,]+)\\s*([KMB])?", RegexOption.IGNORE_CASE).find(text) ?: return 0
+        val m = Patterns.get("([\\d.,]+)\\s*([KMB])?", true).find(text) ?: return 0
         val n = m.groupValues[1].replace(",", "").toDoubleOrNull() ?: return 0
         val mult = when (m.groupValues[2].uppercase()) { "K" -> 1e3; "M" -> 1e6; "B" -> 1e9; else -> 1.0 }
         return (n * mult).toLong()
@@ -287,7 +287,7 @@ object YouTubeSearch {
         val q = norm(query)
         if (q.isEmpty()) return null
         // YouTube fixes misspellings ("markipler" -> "markiplier"): match against what it searched.
-        val corrected = Regex("\"correctedQuery\":\\{\"runs\":\\[\\{\"text\":\"([^\"]+)\"").find(html)?.groupValues?.get(1)?.let { norm(it) }
+        val corrected = Patterns.get("\"correctedQuery\":\\{\"runs\":\\[\\{\"text\":\"([^\"]+)\"").find(html)?.groupValues?.get(1)?.let { norm(it) }
         val names = listOfNotNull(q, corrected)
         fun same(a: String, b: String): Boolean {
             val x = a.replace(" ", "")
@@ -298,10 +298,10 @@ object YouTubeSearch {
         val ci = html.indexOf("\"channelRenderer\":{")
         if (ci >= 0) {
             val chunk = html.substring(ci, minOf(html.length, ci + 6000))
-            val id = Regex("\"channelId\":\"(UC[A-Za-z0-9_-]{22})\"").find(chunk)?.groupValues?.get(1)
-            val title = Regex("\"title\":\\{\"simpleText\":\"([^\"]+)\"").find(chunk)?.groupValues?.get(1)
-            val subs = Regex("\"(?:videoCountText|subscriberCountText)\":\\{(?:\"accessibility\":\\{\"accessibilityData\":\\{\"label\":\"[^\"]*\"\\}\\},)?\"simpleText\":\"([^\"]*subscribers?)\"").find(chunk)?.groupValues?.get(1)
-            val handle = Regex("\"canonicalBaseUrl\":\"/@([^\"]+)\"").find(chunk)?.groupValues?.get(1)
+            val id = Patterns.get("\"channelId\":\"(UC[A-Za-z0-9_-]{22})\"").find(chunk)?.groupValues?.get(1)
+            val title = Patterns.get("\"title\":\\{\"simpleText\":\"([^\"]+)\"").find(chunk)?.groupValues?.get(1)
+            val subs = Patterns.get("\"(?:videoCountText|subscriberCountText)\":\\{(?:\"accessibility\":\\{\"accessibilityData\":\\{\"label\":\"[^\"]*\"\\}\\},)?\"simpleText\":\"([^\"]*subscribers?)\"").find(chunk)?.groupValues?.get(1)
+            val handle = Patterns.get("\"canonicalBaseUrl\":\"/@([^\"]+)\"").find(chunk)?.groupValues?.get(1)
             if (id != null && title != null && subs != null && count(subs) >= 1_000_000 &&
                 names.any { n -> same(n, norm(title)) || (handle != null && same(n, norm(handle))) }
             ) return Popular(title, id, true)
@@ -310,9 +310,9 @@ object YouTubeSearch {
         val vi = html.indexOf("\"videoRenderer\":{")
         if (vi >= 0 && q.split(" ").size >= 2) {
             val chunk = html.substring(vi, minOf(html.length, vi + 9000))
-            val id = Regex("\"videoId\":\"([A-Za-z0-9_-]{11})\"").find(chunk)?.groupValues?.get(1)
-            val title = Regex("\"title\":\\{\"runs\":\\[\\{\"text\":\"([^\"]+)\"").find(chunk)?.groupValues?.get(1)
-            val views = Regex("\"viewCountText\":\\{\"simpleText\":\"([^\"]+)\"").find(chunk)?.groupValues?.get(1)
+            val id = Patterns.get("\"videoId\":\"([A-Za-z0-9_-]{11})\"").find(chunk)?.groupValues?.get(1)
+            val title = Patterns.get("\"title\":\\{\"runs\":\\[\\{\"text\":\"([^\"]+)\"").find(chunk)?.groupValues?.get(1)
+            val views = Patterns.get("\"viewCountText\":\\{\"simpleText\":\"([^\"]+)\"").find(chunk)?.groupValues?.get(1)
             if (id != null && title != null && views != null && count(views) >= 5_000_000) {
                 val t = norm(title)
                 if (names.any { n -> t == n || t.startsWith("$n ") || t.contains(" $n ") || t.startsWith(n) && n.length >= 12 }) return Popular(title, id, false)

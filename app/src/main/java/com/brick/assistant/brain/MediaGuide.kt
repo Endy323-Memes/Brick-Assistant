@@ -54,9 +54,14 @@ data class VideoInfo(
     val apple: AppleVideo?,
     /** Where the listings came from ("TMDB / JustWatch" or "Wikidata"). */
     val listingSource: String,
+    /** Buy prices by store from CheapCharts (with the price before, so a sale shows), filled in when buying. */
+    val prices: List<Price> = emptyList(),
+    /** Apple's all-time low, and CheapCharts' price-history page. */
+    val lowest: Price? = null,
+    val chartsPage: String? = null,
 )
 
-data class AppleVideo(val buy: Double?, val rent: Double?, val url: String, val certificate: String?, val season: String?)
+data class AppleVideo(val buy: Double?, val rent: Double?, val url: String, val certificate: String?, val season: String?, val seasonNumber: Int? = null)
 
 /** A song Brick identified (from what's playing or what you named). */
 data class SongInfo(
@@ -157,6 +162,34 @@ object MediaGuide {
         listenOrWatch(s)?.let { return it }
         buy(s)?.let { return it }
         return null
+    }
+
+    private val ORDINAL_WORDS = listOf("first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth", "eleventh", "twelfth")
+    private const val RECENT_WORDS = "newest|latest|most recent|new|newer|last|recent|current|brand new"
+
+    /**
+     * What [cleanTitle] cuts off but the answer needs: which season ("season 2 of the bear", "the latest season",
+     * "all seasons") and "the newest" of a series ("the newest avengers movie").
+     */
+    fun extras(req: Request.MediaAsk, s: String): Request.MediaAsk {
+        if (req.kind !in setOf(MediaAskKind.WATCH, MediaAskKind.BUY_VIDEO, MediaAskKind.RATING) || req.title == null) return req
+        val t = s.lowercase(Locale.US)
+        var r = req
+        val n = Patterns.get("\\bseason (\\d{1,2})\\b").find(t)?.groupValues?.get(1)?.toInt()
+            ?: Patterns.get("\\b(${ORDINAL_WORDS.joinToString("|")}|\\d{1,2}(?:st|nd|rd|th)) season\\b").find(t)?.groupValues?.get(1)?.let { w ->
+                ORDINAL_WORDS.indexOf(w).takeIf { it >= 0 }?.plus(1) ?: w.filter { it.isDigit() }.toIntOrNull()
+            }
+        when {
+            n != null -> r = r.copy(season = n, video = LookupKind.TV_SHOW)
+            Patterns.get("\\b(?:all|every|each|both) (?:of )?(?:the )?seasons?\\b|\\bcomplete series\\b|\\bwhole (?:show|series)\\b|\\bentire (?:show|series)\\b|\\bfull series\\b|\\bseasons \\d+ (?:and|through|to) \\d+\\b").containsMatchIn(t) ->
+                r = r.copy(season = 0, video = LookupKind.TV_SHOW)
+            Patterns.get("\\b(?:$RECENT_WORDS) season\\b").containsMatchIn(t) -> r = r.copy(newest = true, video = LookupKind.TV_SHOW)
+        }
+        // "the newest avengers (movie)": the title is "avengers", and the newest one is wanted.
+        Patterns.get("^(?:the |a )?(?:$RECENT_WORDS) (?:one of |of )?(?:the )?(.+)$").find(r.title!!)?.let { m ->
+            if (m.groupValues[1].isNotBlank()) r = r.copy(title = m.groupValues[1].trim(), newest = true)
+        }
+        return r
     }
 
     // ------------------------------------------------------------------ loose wording (keywords)
@@ -375,6 +408,21 @@ object MediaGuide {
         return null
     }
 
+    /**
+     * "where can I buy avengers": nothing says movie or show, but it may be one. Run last, after shops and places;
+     * Brick checks the title and searches the web if it isn't a movie or show.
+     */
+    fun guessBuy(input: String): Request.MediaAsk? {
+        val s = input.lowercase(Locale.US).replace(Patterns.get("^(?:hey )?brick[, ]+"), "").trim()
+        val m = Patterns.get("^(?:where|how) (?:can|could|do|should) (?:i|we) (?:buy|purchase|own) (?:a copy of )?(.+)$").find(s)
+            ?: Patterns.get("^(?:where to|i want to|i wanna) (?:buy|purchase|own) (?:a copy of )?(.+)$").find(s) ?: return null
+        val subject = m.groupValues[1].trim()
+        if (subject.split(' ').size > 6 || SONG_WORD.containsMatchIn(subject) || SKY.containsMatchIn(subject) ||
+            Patterns.get("^(?:a|an|some|more|cheap|good|the best|used|my|food|groceries|tickets?|gas|stamps|stocks?|bitcoin|crypto)\\b|\\b(?:near me|nearby|around here|online)$").containsMatchIn(subject)) return null
+        val t = cleanTitle(subject) ?: return null
+        return extras(Request.MediaAsk(MediaAskKind.BUY_VIDEO, t, guess = true), s)
+    }
+
     /** "blinding lights by the weeknd" -> ("blinding lights", "the weeknd"). */
     private fun splitBy(t: String): Pair<String, String?> {
         val i = t.lastIndexOf(" by ")
@@ -417,7 +465,7 @@ object MediaGuide {
 
     /** Where a Wikidata ID says a title is: property -> (service, how, link). */
     private data class Listing(val prop: String, val name: String, val access: Access, val url: (id: String, title: String) -> String)
-    private fun g(title: String, where: String) = "https://www.google.com/search?q=" + Http.enc("watch $title on $where")
+    private fun g(title: String, where: String) = "https://duckduckgo.com/?q=" + Http.enc("watch $title on $where")
     private val LISTINGS = listOf(
         Listing("P1874", "Netflix", Access.SUBSCRIPTION) { id, _ -> "https://www.netflix.com/title/$id" },
         Listing("P6466", "Hulu", Access.SUBSCRIPTION) { id, _ -> "https://www.hulu.com/movie/$id" },
@@ -457,7 +505,7 @@ object MediaGuide {
     }
 
     /** Finds a movie or show and what's known about its scores and where to watch it. */
-    suspend fun video(title: String, kind: LookupKind?, tmdbKey: String, country: String): VideoInfo? = coroutineScope {
+    suspend fun video(title: String, kind: LookupKind?, tmdbKey: String, country: String, season: Int? = null): VideoInfo? = coroutineScope {
         val accept = if (kind != null) setOf(kind) else setOf(LookupKind.MOVIE, LookupKind.TV_SHOW)
         val words = if (kind != null) listOf(kind.searchWord) else emptyList()
         val page = Lookup.page(title, accept, words) ?: return@coroutineScope null
@@ -468,7 +516,7 @@ object MediaGuide {
         val claimsJob = async { page.qid?.let { Lookup.claims(it) } }
         val mazeJob = async { if (k != LookupKind.MOVIE) tvmaze(name) else null }
         val tmdbJob = async { if (tmdbKey.isNotBlank()) tmdb(name, k, tmdbKey, country) else null }
-        val appleJob = async { apple(name, k) }
+        val appleJob = async { apple(name, k, season) }
         val claims = claimsJob.await()
         val scores = claims?.let { Lookup.reviewScores(it) }.orEmpty()
         val cert = claims?.optJSONArray("P1657")?.optJSONObject(0)?.optJSONObject("mainsnak")?.optJSONObject("datavalue")
@@ -510,10 +558,20 @@ object MediaGuide {
     }
 
     private fun applePrices(a: AppleVideo): String? = listOfNotNull(
-        a.buy?.let { if (a.season != null) "buy from ${money(it)} a season" else "buy ${money(it)}" }, a.rent?.let { "rent ${money(it)}" },
+        a.buy?.let {
+            when {
+                a.seasonNumber != null -> "season ${a.seasonNumber} ${money(it)}"
+                a.season != null -> "buy from ${money(it)} a season"
+                else -> "buy ${money(it)}"
+            } + (appleDrop(a)?.let { p -> " (${p.off}% off, save ${money(p.saved)})" } ?: "")
+        }, a.rent?.let { "rent ${money(it)}" },
     ).joinToString(", ").ifEmpty { null }
 
     fun money(v: Double) = "$" + "%.2f".format(Locale.US, v)
+
+    /** Apple gives no regular price, so a drop is measured against the highest Brick has seen for that page (kept on this phone). */
+    fun appleDrop(a: AppleVideo): Price? = a.buy?.let { Prices.remember("Apple TV", a.url + (a.seasonNumber?.let { n -> "#s$n" } ?: if (a.season != null) "#from" else ""), it, a.url) }?.takeIf { it.onSale }
+    fun songDrop(s: SongInfo): Price? = s.applePrice?.let { p -> s.appleUrl?.let { u -> Prices.remember("iTunes", u, p) } }?.takeIf { it.onSale }
 
     private data class Maze(val rating: Double?, val network: String?, val image: String?, val premiered: String?)
 
@@ -571,7 +629,7 @@ object MediaGuide {
     }
 
     /** Apple's store: the title's buy and rent price (the store search misses some titles). */
-    private suspend fun apple(title: String, kind: LookupKind?): AppleVideo? = withContext(Dispatchers.IO) {
+    private suspend fun apple(title: String, kind: LookupKind?, season: Int? = null): AppleVideo? = withContext(Dispatchers.IO) {
         val norm = norm(title)
         if (kind != LookupKind.TV_SHOW) {
             val r = Http.getJsonCached("https://itunes.apple.com/search?term=${Http.enc(title)}&media=movie&entity=movie&country=US&limit=10")?.optJSONArray("results")
@@ -583,7 +641,13 @@ object MediaGuide {
         if (kind != LookupKind.MOVIE) {
             val r = Http.getJsonCached("https://itunes.apple.com/search?term=${Http.enc(title)}&media=tvShow&entity=tvSeason&country=US&limit=25")?.optJSONArray("results")
             val seasons = r?.let { a -> (0 until a.length()).mapNotNull { a.optJSONObject(it) }.filter { norm(it.optString("artistName")) == norm } }.orEmpty()
-            val first = seasons.minByOrNull { Patterns.get("Season (\\d+)").find(it.optString("collectionName"))?.groupValues?.get(1)?.toIntOrNull() ?: 99 }
+            fun number(o: org.json.JSONObject) = Patterns.get("Season (\\d+)").find(o.optString("collectionName"))?.groupValues?.get(1)?.toIntOrNull()
+            // One season asked for: that season's own price and page.
+            if (season != null && season > 0) seasons.firstOrNull { number(it) == season }?.let { o ->
+                return@withContext AppleVideo(o.optDouble("collectionPrice").takeIf { it > 0 }, null, o.optString("collectionViewUrl").substringBefore("?"),
+                    o.optString("contentAdvisoryRating").ifBlank { null }, "season $season", seasonNumber = season)
+            }
+            val first = seasons.minByOrNull { number(it) ?: 99 }
             val cheapest = seasons.mapNotNull { it.optDouble("collectionPrice").takeIf { p -> p > 0 } }.minOrNull()
             if (first != null) return@withContext AppleVideo(
                 cheapest, null, first.optString("collectionViewUrl").substringBefore("?"),
@@ -605,13 +669,18 @@ object MediaGuide {
             Store("Prime Video", search("Prime Video", t),
                 listOf("Works on almost every phone, TV and console", "Frequent sales"),
                 listOf("4K isn't on every device", "Store mixes in Prime and ad-supported titles")),
-            Store("Fandango at Home (Vudu)", "https://www.google.com/search?q=" + Http.enc("$t Fandango at Home"),
+            Store("Fandango at Home (Vudu)", "https://duckduckgo.com/?q=" + Http.enc("$t Fandango at Home"),
                 listOf("Regular sales and bundle deals", "Strong 4K catalog"),
                 listOf("Fewer devices than Amazon", "App pushes its free, ad-supported movies")),
             Store("Google TV / YouTube", search("Google TV", t),
                 listOf("Built into Android and Google TV", "Share purchases with up to 5 family members"),
                 listOf("4K depends on the device", "Google TV and YouTube storefronts can be confusing")),
-        )
+        ).map { s ->
+            // CheapCharts' price there (Apple's rental price stays alongside).
+            val p = v.prices.firstOrNull { s.name.startsWith(it.store) } ?: return@map s
+            val rent = if (s.name.startsWith("Apple")) v.apple?.rent?.let { ", rent ${money(it)}" } ?: "" else ""
+            s.copy(price = "buy ${p.shown()}$rent", checked = true)
+        }
         val q = "$t ${if (v.kind == LookupKind.TV_SHOW) "complete series" else "blu ray"}"
         val physical = listOf(
             Store("Amazon", "https://www.amazon.com/s?k=${Http.enc(q)}", listOf("Biggest selection, including imports"), listOf("Watch for third-party sellers")),
@@ -800,7 +869,7 @@ object MediaGuide {
             Store("iTunes Store", s.appleUrl ?: "https://music.apple.com/us/search?term=$e",
                 listOf("256 kbps AAC with no copy protection; the file is yours", "Big catalog, including major labels"),
                 listOf("Not lossless", "Buy in iTunes or on an iPhone; there's no store on Android"),
-                s.applePrice?.let { money(it) }, s.appleUrl != null),
+                s.applePrice?.let { money(it) }?.let { m -> songDrop(s)?.let { p -> "$m (${p.off}% off, save ${money(p.saved)})" } ?: m }, s.appleUrl != null),
             Store("Amazon Digital Music", "https://www.amazon.com/s?k=$e&i=digital-music",
                 listOf("MP3s with no copy protection; play anywhere", "Often cheaper than iTunes"),
                 listOf("MP3 only, not lossless", "Buy on the website; the app pushes streaming")),
@@ -881,26 +950,32 @@ object MediaGuide {
             if (freeSpots.isNotEmpty()) sb.append("${v.title} is free with ads on ${join(freeSpots)}. ")
             else sb.append("I didn't find ${v.title} free anywhere. Tubi, Pluto TV and The Roku Channel are worth a search. ")
         }
+        // Two services at most out loud; the rest (and where to rent or buy) are on the card.
+        fun few(xs: List<String>) = if (xs.size <= 2) join(xs) else "${xs[0]}, ${xs[1]} and ${xs.size - 2} more"
         when {
-            stream.isNotEmpty() -> sb.append("You can stream ${v.title} on ${join(stream)}. ")
-            usually.isNotEmpty() -> sb.append("${v.title} usually streams on ${join(usually)}. ")
+            stream.isNotEmpty() -> sb.append("You can stream ${v.title} on ${few(stream)}. ")
+            usually.isNotEmpty() -> sb.append("${v.title} usually streams on ${few(usually)}. ")
             !free && freeSpots.isEmpty() -> sb.append("I couldn't confirm a streaming service for ${v.title}. ")
         }
-        if (!free && freeSpots.isNotEmpty() && stream.isNotEmpty()) sb.append("It's also free with ads on ${join(freeSpots)}. ")
-        if (!free && freeSpots.isNotEmpty() && stream.isEmpty()) sb.append("${v.title} is free with ads on ${join(freeSpots)}. ")
-        if (buy.isNotEmpty()) sb.append("Rent or buy it on ${join(buy.take(4))}.")
+        if (!free && freeSpots.isNotEmpty() && stream.isNotEmpty()) sb.append("It's also free with ads on ${few(freeSpots)}. ")
+        if (!free && freeSpots.isNotEmpty() && stream.isEmpty()) sb.append("${v.title} is free with ads on ${few(freeSpots)}. ")
+        if (buy.isNotEmpty() || stream.size + freeSpots.size > 2) sb.append("Everywhere to watch it is on the card above.")
         return sb.toString().trim()
     }
 
     fun buyVideoLine(v: VideoInfo, format: BuyFormat, rent: Boolean): String {
-        val price = v.apple?.let { a -> if (rent) a.rent?.let { " (${money(it)} to rent on Apple)" } else a.buy?.let { " (${money(it)} on Apple)" } } ?: ""
-        val digital = "Apple TV$price, Prime Video, Google TV and Fandango at Home"
-        if (rent) return "You can rent ${v.title} on $digital."
-        val disc = "On disc, try Amazon, Walmart, Target or Barnes & Noble. Best Buy stopped selling movies on disc in 2024."
-        return when (format) {
-            BuyFormat.DIGITAL -> "You can buy ${v.title} digitally on $digital. The card has pros and cons for each store."
-            BuyFormat.PHYSICAL -> "For ${v.title} on disc, try Amazon, Walmart, Target, Barnes & Noble, or eBay for used copies. Best Buy stopped selling movies on disc in 2024."
-            BuyFormat.ANY -> "You can buy ${v.title} digitally on $digital. $disc"
+        val card = "The stores are on the card above."
+        if (rent) return "You can rent ${v.title} digitally${v.apple?.rent?.let { " for ${money(it)} on Apple TV" } ?: ""}. $card"
+        // The cheapest price (CheapCharts', or Apple's), a sale or all-time low, and the stores left to the card.
+        val cheapest = v.prices.minByOrNull { it.now }
+        val from = cheapest?.let { " from ${money(it.now)}${if (v.prices.size > 1 && v.prices.any { o -> o.now > it.now }) " at ${it.store}" else ""}" }
+            ?: v.apple?.buy?.let { b -> appleDrop(v.apple)?.let { p -> " for ${money(b)} on Apple TV, ${p.off}% below the ${money(p.regular!!)} I saw before" } ?: " for ${money(b)} on Apple TV" } ?: ""
+        val lead = if (format == BuyFormat.PHYSICAL) "" else
+            listOfNotNull(Prices.saleLine(v.title, v.prices), Prices.lowestLine(v.lowest, v.prices)).joinToString(" ").let { if (it.isEmpty()) "" else "$it " }
+        return lead + when (format) {
+            BuyFormat.DIGITAL -> "You can buy ${v.title} digitally$from. $card"
+            BuyFormat.PHYSICAL -> "You can buy ${v.title} on disc, new or used. $card"
+            BuyFormat.ANY -> "You can buy ${v.title} digitally$from, or on disc. $card"
         }
     }
 
@@ -918,7 +993,8 @@ object MediaGuide {
     }
 
     fun buySongLine(s: SongInfo): String {
-        val itunes = s.applePrice?.let { "on iTunes for ${money(it)}" } ?: "on iTunes"
+        val drop = songDrop(s)
+        val itunes = s.applePrice?.let { "on iTunes for ${money(it)}" + (drop?.let { p -> ", ${p.off}% below the ${money(p.regular!!)} I saw before" } ?: "") } ?: "on iTunes"
         return "You can buy ${s.title} by ${s.artist} $itunes, or on Amazon Music, Bandcamp or Qobuz. The card has pros and cons for each store."
     }
 
