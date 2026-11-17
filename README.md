@@ -20,6 +20,11 @@ Digital assistant app).
 - **Requests:** timers, alarms, reminders, calendar, texts (always read back first, never sent from the lock
   screen), calls, math, time, apps, device controls (flashlight, volume, ringer, brightness, battery), notes,
   notifications, email, Discord replies, questions and web search.
+- **Tech specs:** phones, tablets, laptops, PC parts, keyboards, mice, mics, headphones, earbuds, speakers,
+  gaming headsets, VR headsets, consoles and operating systems, two side by side, plus a PC build planner and
+  game search. Headphones, earbuds and speakers show SoundGuys' score and today's price.
+- **Calculator:** exact answers however long ("9000 * 200 - 5 + 300^15"), with factorials, roots, trig, logs,
+  averages, rounding and everyday wording ("half of 90", "20% off 59.99").
 - **Weather:** today, tomorrow, this week or the weekend, or one detail (UV, wind, rain, snow). Sources:
   AccuWeather, Pirate Weather, Visual Crossing, WeatherAPI.com, OpenWeatherMap (each with your own key), the
   US National Weather Service or Open-Meteo (no key). If a source fails, Brick falls back to Open-Meteo. Say

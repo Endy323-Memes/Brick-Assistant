@@ -1,5 +1,20 @@
 # Brick update log
 
+## 1.5
+
+### New features
+- **Tech specs:** ask about phones, tablets, laptops, PC parts, keyboards, mice and mics in plain words, or put two side by side. Keyboards, mice and mics from Logitech, Razer, SteelSeries, Corsair, Elgato, Shure and others are read live from the maker's site with today's price.
+- **Headphones, earbuds, IEMs and speakers:** noise cancelling, codecs, drivers, fit, water rating, how loud a speaker gets, whether it charges your phone or pairs for stereo. Cards show SoundGuys' score and today's price there, and gear Brick has no notes on is read from SoundGuys' product listings.
+- **Gaming and VR headsets:** mics, drivers, connections and what they work with; for VR the screens, refresh rate, field of view, tracking and whether it needs a PC.
+- **PC build planner:** a parts list for a budget and a job ("a $1200 gaming PC").
+- **Games, consoles and operating systems:** find a game by its details, and look up consoles, handhelds and OS versions.
+- **Calculator:** exact answers however long the number ("9000 * 200 - 5 + 300^15" keeps all 38 digits on the card). Adds factorials, square, cube and nth roots, sin, cos and tan, logs, averages, sums, rounding, "half of 90", "20% off 59.99", and numbers typed with commas.
+
+### Improvements
+- Questions about sports, books, movies, TV, music, plants and insects reach the right answer more often.
+- TV and movie cast lists lead with the stars.
+- Brick History shows how much storage it uses.
+
 ## 1.4
 
 ### New features
