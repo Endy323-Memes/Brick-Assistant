@@ -1,6 +1,7 @@
 package com.brick.assistant.brain
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.time.LocalDate
@@ -141,12 +142,12 @@ object Animals {
     fun forms(w: String): List<String> = listOf(singular(w), w).distinct()
 
     private fun clean(raw: String): String {
-        var s = raw.lowercase(Locale.US).replace('’', '\'').replace(Regex("[?!.,]"), " ").replace(Regex("\\s+"), " ").trim()
+        var s = raw.lowercase(Locale.US).replace('’', '\'').replace(Patterns.get("[?!.,]"), " ").replace(Patterns.get("\\s+"), " ").trim()
         s = Colloquial.spoken(s).lowercase(Locale.US).replace(LEAD, "").trim()
         // Contractions people say: "what's", "how'd", "where'd".
-        s = s.replace(Regex("\\bwhat's\\b"), "what is").replace(Regex("\\bwhats\\b"), "what is").replace(Regex("\\bwhere's\\b"), "where is")
-            .replace(Regex("\\b(how|when|where|why|what|who)'d\\b"), "$1 did").replace(Regex("\\bwho's\\b"), "who is")
-        return s.replace(Regex("\\s+(?:please|for me|real quick|again|exactly|actually|usually|typically|normally|on average|in the wild|in captivity|naturally)$"), "").trim()
+        s = s.replace(Patterns.get("\\bwhat's\\b"), "what is").replace(Patterns.get("\\bwhats\\b"), "what is").replace(Patterns.get("\\bwhere's\\b"), "where is")
+            .replace(Patterns.get("\\b(how|when|where|why|what|who)'d\\b"), "$1 did").replace(Patterns.get("\\bwho's\\b"), "who is")
+        return s.replace(Patterns.get("\\s+(?:please|for me|real quick|again|exactly|actually|usually|typically|normally|on average|in the wild|in captivity|naturally)$"), "").trim()
     }
 
     private const val NAME = "([a-z][a-z' -]{1,40}?)"
@@ -352,59 +353,59 @@ object Animals {
             val said = m.groupValues[0]
             var name = m.groupValues[1].trim().removePrefix("the ").removePrefix("a ").removePrefix("an ").removePrefix("all the ").trim()
             // "my tomato plants", "my monstera": fine for plants ("my dog", "my kids" aren't asking about the species).
-            name.removePrefix("my ").takeIf { name.startsWith("my ") && (isPlantWord(it) || Regex("^(?:$PLANTS)(?:e?s)?(?: plants?| trees?)?$").matches(it)) }?.let { name = it }
-            name = name.removeSuffix(" animal").removeSuffix(" species").removeSuffix(" in the wild").let { n -> if (Regex("^(?:$PLANTS)$").matches(n) || n in HOUSEPLANTS) n else n.removeSuffix(" plant") }.trim()
+            name.removePrefix("my ").takeIf { name.startsWith("my ") && (isPlantWord(it) || Patterns.get("^(?:$PLANTS)(?:e?s)?(?: plants?| trees?)?$").matches(it)) }?.let { name = it }
+            name = name.removeSuffix(" animal").removeSuffix(" species").removeSuffix(" in the wild").let { n -> if (Patterns.get("^(?:$PLANTS)$").matches(n) || n in HOUSEPLANTS) n else n.removeSuffix(" plant") }.trim()
             if (name.isEmpty() || name.split(' ').size > 4 || NOT_AN_ANIMAL.containsMatchIn(name)) continue
             if (History.isEvent(name)) continue
             // "where does taylor swift live" vs "where do penguins live": a plural, "a/the", or an animal Brick knows.
             if (strict) {
-                val hadArticle = Regex("^(?:\\w+ ){1,3}(?:a|an|the) ").containsMatchIn(said) && Regex("\\b(?:a|an|the) ${Regex.escape(name)}\\b").containsMatchIn(said)
-                val plural = (name.endsWith("s") && !name.endsWith("ss") && !name.endsWith("us")) || Regex("\\b(?:mice|geese|sheep|deer|fish|oxen|cattle|cacti|fungi|bamboo|grass|moss|ivy|kelp|lavender|clover)$").containsMatchIn(name)
+                val hadArticle = Patterns.get("^(?:\\w+ ){1,3}(?:a|an|the) ").containsMatchIn(said) && Regex("\\b(?:a|an|the) ${Regex.escape(name)}\\b").containsMatchIn(said)
+                val plural = (name.endsWith("s") && !name.endsWith("ss") && !name.endsWith("us")) || Patterns.get("\\b(?:mice|geese|sheep|deer|fish|oxen|cattle|cacti|fungi|bamboo|grass|moss|ivy|kelp|lavender|clover)$").containsMatchIn(name)
                 if (!hadArticle && !plural && !KNOWN_RX.matches(name)) continue
             }
             val knownName = KNOWN_RX.matches(name) || KNOWN_RX.matches(singular(name)) || PLANT_RX.containsMatchIn(name) ||
-                Regex("^(?:$PLANTS)(?:e?s)?(?: plants?| trees?| bush(?:es)?| flowers?)?$").matches(name) || isBugWord(name) || isSeaWord(name)
+                Patterns.get("^(?:$PLANTS)(?:e?s)?(?: plants?| trees?| bush(?:es)?| flowers?)?$").matches(name) || isBugWord(name) || isSeaWord(name)
             // Plants don't bite, and "is a rose a mammal" isn't a thing.
             if ((want == AnimalWant.BITE || want == AnimalWant.KIND || want == AnimalWant.LIFECYCLE) && isPlantWord(name) && !isBugWord(name)) continue
-            if (rx in LOOSE && !knownName && !(want == AnimalWant.TOXIC && Regex("\\b(?:poisonous|toxic|venomous|edible)\\b").containsMatchIn(s))) continue
+            if (rx in LOOSE && !knownName && !(want == AnimalWant.TOXIC && Patterns.get("\\b(?:poisonous|toxic|venomous|edible)\\b").containsMatchIn(s))) continue
             // "facts" alone: only for animals and plants Brick knows ("ww2 facts" is history, "taxes info" is a search).
-            if (want == AnimalWant.OVERVIEW && !Regex("\\b(?:animal|animals|species|plant|plants|bugs?|insects?)$").containsMatchIn(s) && !knownName) continue
+            if (want == AnimalWant.OVERVIEW && !Patterns.get("\\b(?:animal|animals|species|plant|plants|bugs?|insects?)$").containsMatchIn(s) && !knownName) continue
             // "is the store safe", "is it bad": only for animals and plants Brick knows, or plant words.
             if (want == AnimalWant.TOXIC && !strict && !KNOWN_RX.matches(name) && !PLANT_RX.containsMatchIn(name) &&
-                !Regex("^(?:poisonous|toxic|venomous|edible)$").matches(m.groupValues.getOrNull(2).orEmpty()) && !Regex("\\b(?:poisonous|toxic|venomous|edible)\\b").containsMatchIn(s)) continue
-            if (want == AnimalWant.TOXIC && Regex("^(?:eat|safely eat|touch) ").containsMatchIn(s) && !KNOWN_RX.matches(name) && !PLANT_RX.containsMatchIn(name)) continue
-            if (want == AnimalWant.HEIGHT && Regex("^how (?:big|large|long|wide)").containsMatchIn(s) && !KNOWN_RX.matches(name) && !PLANT_RX.containsMatchIn(name) && !name.endsWith("s")) continue
+                !Patterns.get("^(?:poisonous|toxic|venomous|edible)$").matches(m.groupValues.getOrNull(2).orEmpty()) && !Patterns.get("\\b(?:poisonous|toxic|venomous|edible)\\b").containsMatchIn(s)) continue
+            if (want == AnimalWant.TOXIC && Patterns.get("^(?:eat|safely eat|touch) ").containsMatchIn(s) && !KNOWN_RX.matches(name) && !PLANT_RX.containsMatchIn(name)) continue
+            if (want == AnimalWant.HEIGHT && Patterns.get("^how (?:big|large|long|wide)").containsMatchIn(s) && !KNOWN_RX.matches(name) && !PLANT_RX.containsMatchIn(name) && !name.endsWith("s")) continue
             val asked = when (want) {
-                AnimalWant.DIET -> Regex("\\b($DIETS)\\b").find(s)?.groupValues?.get(1)
-                AnimalWant.TOXIC -> Regex("\\b($DANGER|eat|touch)\\b").find(s.substring(m.groups[1]!!.range.last + 1).ifBlank { s })?.groupValues?.get(1)
-                    ?: Regex("\\b($DANGER)\\b").find(s)?.groupValues?.get(1) ?: "eat"
-                AnimalWant.HABITAT -> if (Regex("\\b(?:fresh ?water|salt ?water|salty water|sea ?water|marine|brackish|tap water|lakes?|rivers?|ponds?|tanks?|aquariums?|ocean|oceans|the sea)\\b").containsMatchIn(s.replace(name, ""))) "water"
-                    else if (Regex("\\b(?:sun|sunlight|light|water|shade|soil|fertili[sz]er|grow|growing|plant|planting|care|zone|ph|dirt|space|room|alive|dying|healthy|tips|wilting|drooping|yellow|brown|put|frost|humidity|indoors)\\b").containsMatchIn(s.replace(name, ""))) "care" else null
+                AnimalWant.DIET -> Patterns.get("\\b($DIETS)\\b").find(s)?.groupValues?.get(1)
+                AnimalWant.TOXIC -> Patterns.get("\\b($DANGER|eat|touch)\\b").find(s.substring(m.groups[1]!!.range.last + 1).ifBlank { s })?.groupValues?.get(1)
+                    ?: Patterns.get("\\b($DANGER)\\b").find(s)?.groupValues?.get(1) ?: "eat"
+                AnimalWant.HABITAT -> if (Patterns.get("\\b(?:fresh ?water|salt ?water|salty water|sea ?water|marine|brackish|tap water|lakes?|rivers?|ponds?|tanks?|aquariums?|ocean|oceans|the sea)\\b").containsMatchIn(s.replace(name, ""))) "water"
+                    else if (Patterns.get("\\b(?:sun|sunlight|light|water|shade|soil|fertili[sz]er|grow|growing|plant|planting|care|zone|ph|dirt|space|room|alive|dying|healthy|tips|wilting|drooping|yellow|brown|put|frost|humidity|indoors)\\b").containsMatchIn(s.replace(name, ""))) "care" else null
                 AnimalWant.BITE -> when {
-                    Regex("\\bst(?:ing|ung)").containsMatchIn(s) -> "sting"
-                    Regex("\\b(?:attack|eat|hunt|kill|swim|dive|snorkel|surf|man-?eat\\w*|maneaters|killers)\\b").containsMatchIn(s.replace(name, "")) -> "attack"
+                    Patterns.get("\\bst(?:ing|ung)").containsMatchIn(s) -> "sting"
+                    Patterns.get("\\b(?:attack|eat|hunt|kill|swim|dive|snorkel|surf|man-?eat\\w*|maneaters|killers)\\b").containsMatchIn(s.replace(name, "")) -> "attack"
                     else -> "bite"
                 }
-                AnimalWant.LIFECYCLE -> if (Regex("\\b(?:turn into|turn in to|become|grow into|change into|grow up to be|morph into)\\b").containsMatchIn(s)) "become" else null
+                AnimalWant.LIFECYCLE -> if (Patterns.get("\\b(?:turn into|turn in to|become|grow into|change into|grow up to be|morph into)\\b").containsMatchIn(s)) "become" else null
                 AnimalWant.PESTS -> when {
-                    Regex("\\b(?:attract\\w*|drawn|lures?|why (?:are|is) there|why do i (?:have|keep)|why am i|coming from|come from)\\b").containsMatchIn(s) -> "attract"
-                    Regex("\\b(?:good|bad|beneficial|helpful|useful|pests?)$").containsMatchIn(s) || Regex("\\b(?:good|bad) (?:for|to have|bugs?)\\b").containsMatchIn(s) -> "good"
+                    Patterns.get("\\b(?:attract\\w*|drawn|lures?|why (?:are|is) there|why do i (?:have|keep)|why am i|coming from|come from)\\b").containsMatchIn(s) -> "attract"
+                    Patterns.get("\\b(?:good|bad|beneficial|helpful|useful|pests?)$").containsMatchIn(s) || Patterns.get("\\b(?:good|bad) (?:for|to have|bugs?)\\b").containsMatchIn(s) -> "good"
                     else -> "rid"
                 }
-                AnimalWant.KIND -> Regex("^(?:do|does) .* have (?:a |an |any )?(bones|skeleton|backbone|spine|teeth|scales|brains?|blood|hearts?|eyes|ears|lungs|gills|fins|legs|wings|venom|feelings|a nose|noses|tongues?)$").find(s)?.let { "have:" + it.groupValues[1] }
-                    ?: (if (Regex("\\b(?:breathe|breath|underwater|under water|out of water|without air)\\b").containsMatchIn(s)) (if (s.startsWith("how long")) "hold" else "breathe") else null)
-                    ?: Regex("\\b(legs|eyes|wings|hearts|teeth|body parts|body segments|arms|tentacles|fins|gills|brains)\\b").find(s)?.groupValues?.get(1)
-                    ?: Regex("\\b($CLASSES)$").find(s)?.groupValues?.get(1)?.let { singular(it) }
+                AnimalWant.KIND -> Patterns.get("^(?:do|does) .* have (?:a |an |any )?(bones|skeleton|backbone|spine|teeth|scales|brains?|blood|hearts?|eyes|ears|lungs|gills|fins|legs|wings|venom|feelings|a nose|noses|tongues?)$").find(s)?.let { "have:" + it.groupValues[1] }
+                    ?: (if (Patterns.get("\\b(?:breathe|breath|underwater|under water|out of water|without air)\\b").containsMatchIn(s)) (if (s.startsWith("how long")) "hold" else "breathe") else null)
+                    ?: Patterns.get("\\b(legs|eyes|wings|hearts|teeth|body parts|body segments|arms|tentacles|fins|gills|brains)\\b").find(s)?.groupValues?.get(1)
+                    ?: Patterns.get("\\b($CLASSES)$").find(s)?.groupValues?.get(1)?.let { singular(it) }
                 else -> null
             }
             val plant = PLANT_RX.containsMatchIn(name) && !isBugWord(name) || want == AnimalWant.BLOOM || asked == "care"
             val bug = !plant && (isBugWord(name) || isBugWord(singular(name)))
             val seaName = !plant && !bug && (isSeaWord(name) || isSeaWord(singular(name)))
             // "What does chicken taste like" is cooking, not the field guide; seafood only.
-            if (want == AnimalWant.TOXIC && Regex("\\btaste like$").containsMatchIn(s) && !seaName) continue
+            if (want == AnimalWant.TOXIC && Patterns.get("\\btaste like$").containsMatchIn(s) && !seaName) continue
             // "Are orcas dangerous", "is a black widow deadly": for sea creatures and bugs that's about attacks and bites, not eating them.
             if (want == AnimalWant.TOXIC && (seaName || bug) && asked in setOf("dangerous", "deadly", "harmful", "lethal", "bad") &&
-                !Regex("\\b(?:puffer|blowfish|fugu|eat|eating|edible)\\b").containsMatchIn(s)) {
+                !Patterns.get("\\b(?:puffer|blowfish|fugu|eat|eating|edible)\\b").containsMatchIn(s)) {
                 return Request.Animal(AnimalAsk(name, AnimalWant.BITE, if (bug) "bite" else "attack", s, false, bug, seaName))
             }
             val sea = !plant && !bug && (isSeaWord(name) || isSeaWord(singular(name)) || asked == "water" && want == AnimalWant.HABITAT || want == AnimalWant.DEPTH)
@@ -550,7 +551,15 @@ object Animals {
         Regex("\\b(?:carnivor\\w*|herbivor\\w*|omnivor\\w*|insectivor\\w*|piscivor\\w*|frugivor\\w*|folivor\\w*|diet|forag\\w*|graz(?:es?|ing)|brows(?:es?|ing))\\b", RegexOption.IGNORE_CASE),
     )
     /** What hunts the animal, so it isn't read as what the animal hunts ("rabbits are the main prey of red foxes"). */
-    private val HUNTED = Regex("\\b(?:prey (?:of|for|to)|preyed (?:up)?on by|eaten by|hunted by|killed by|taken by|predators? (?:of|include|such as|are)|falls? prey)\\b", RegexOption.IGNORE_CASE)
+    private val HUNTED = Regex("\\b(?:prey (?:of|for|to)|preyed (?:up)?on by|eaten by|hunted by|killed by|taken by|predators? (?:of|include|such as|are)|falls? prey|" +
+        // "Grasshoppers are affected by parasites ..., and many predatory creatures feed on both nymphs and adults": what eats them.
+        // "Grasshoppers are camouflaged to avoid detection by predators that hunt by sight": hiding from hunters, not hunting.
+        // "Insecticides can be used, but adult grasshoppers are difficult to kill": people killing it.
+        "insecticides?|pesticides?|(?:difficult|hard|easy) to kill|pest control|" +
+        "predators? (?:that|which|who) hunt|(?:avoid|evade|escape|deter|hide from|protect\\w* \\w+ from)(?: \\w+)?(?: by)? predators|" +
+        "predatory \\w+ (?:feed|prey|eat)|parasitoids? (?:of|lay)|affected by|(?:birds|predators|animals|creatures|mammals|reptiles|spiders|fish) (?:feed|prey|feeding|preying) (?:on|upon))\\b", RegexOption.IGNORE_CASE)
+    private val PLANT_FOOD = Regex("\\b(?:foliage|leaves|grass(?:es)?|plants?|seeds?|nectar|pollen|fruits?|crops?|roots|shoots|stems|bark|algae|vegetation|sap|wood|fungi)\\b", RegexOption.IGNORE_CASE)
+    private val ANIMAL_FOOD = Regex("\\b(?:insects?|meat|prey|animals|fish|worms?|larvae|eggs|carrion|blood|flies|aphids|mammals|birds|rodents|spiders|snails|other \\w+s)\\b", RegexOption.IGNORE_CASE)
     private val PREY_SAID = listOf(
         Regex("\\b(?:prey (?:on|upon|mainly|mostly|primarily|largely|includes?|consists?|species|items|base)|preys? (?:on|upon|mainly|mostly)|(?:its|their|main|primary|preferred|favou?red|typical) prey|hunts? (?:mainly|mostly|primarily|large|small|\\w+s\\b)|" +
             "diet (?:consists|is composed|includes|mainly|mostly|primarily)|feeds? (?:on|mainly|mostly|primarily|largely|chiefly))\\b", RegexOption.IGNORE_CASE),
@@ -726,9 +735,8 @@ object Animals {
         val bug = !plant && (cls in setOf("insect", "arachnid", "myriapod") || ask.bug && cls in setOf(null, "crustacean"))
         val sea = !plant && !bug && (ask.sea || cls in setOf("fish", "echinoderm", "cnidarian", "sponge") || p.description?.let { SEA_DESC.containsMatchIn(it) } == true)
         val names = (forms(ask.animal) + forms(one) + name.lowercase(Locale.US) + name.lowercase(Locale.US).split(' ').last()).filter { it.length >= 3 }.distinct()
-        val text = Characters.wikiText(p.title)
-        val secs = text?.let { Characters.sections(it) } ?: listOf(Characters.Section("", p.extract, 2, false))
-        val intro = secs.firstOrNull { it.heading.isEmpty() }?.text ?: p.extract
+        // The article loads while Wikidata's names (below) do.
+        val textAhead = async { Characters.wikiText(p.title) }
 
         // Wikidata: the scientific name with the year and who named it, status, lifespan, food, habitat.
         val c = claims ?: JSONObject()
@@ -746,6 +754,10 @@ object Animals {
         val habitats = habitatIds.mapNotNull { labels[it] }
         val lifeData = span(c, "P2250")
         val maxLife = span(c, "P4214")
+
+        val text = textAhead.await()
+        val secs = text?.let { Characters.sections(it) } ?: listOf(Characters.Section("", p.extract, 2, false))
+        val intro = secs.firstOrNull { it.heading.isEmpty() }?.text ?: p.extract
 
         // The article.
         val lifeSaid = pick(secs, LIFESPAN_HEAD, LIFESPAN_SAID, names, LIFESPAN_AVOID)?.takeIf { lifespanIn(it) != null }
@@ -767,7 +779,9 @@ object Animals {
             else -> dietKind(listOfNotNull(intro, dietSaid).joinToString(" ")) ?: dietKind(text?.take(30_000).orEmpty())
         }
         // Plant eaters (and plants) don't hunt.
-        val grazer = kind in setOf("Herbivore", "Frugivore", "Nectarivore", "Detritivore") || plant && !carnivorousPlant
+        // A diet sentence naming only plant food ("grasshoppers eat large quantities of foliage") counts too.
+        val plantDiet = dietSaid != null && PLANT_FOOD.containsMatchIn(dietSaid) && !ANIMAL_FOOD.containsMatchIn(dietSaid)
+        val grazer = kind in setOf("Herbivore", "Frugivore", "Nectarivore", "Detritivore") || plant && !carnivorousPlant || plantDiet
         val preySaid = if (grazer) null else pick(secs, DIET_HEAD, PREY_SAID, names, HUNTED)
         val predatorSaid = if (plant) pick(secs, PREDATOR_HEAD, EATEN_SAID, names, Regex("\\b(?:carcinogen\\w*|toxic\\w*|poison\\w*|cancer|humans?|people)\\b", RegexOption.IGNORE_CASE)) else pick(secs, PREDATOR_HEAD, PREDATOR_SAID, names)
         val habitatAvoid = Regex("\\b(?:longest-lived|oldest|record|years old|lived to|age of|prey|predators?|eats?|diet|fossil\\w*|million years|amber)\\b", RegexOption.IGNORE_CASE)

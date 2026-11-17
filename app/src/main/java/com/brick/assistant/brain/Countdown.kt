@@ -71,9 +71,9 @@ object Countdown {
         for ((rx, since) in FORMS) {
             val m = rx.find(s) ?: continue
             val g = m.groupValues.drop(1).filter { it.isNotEmpty() }
-            val unitWord = g.firstOrNull { Regex("^$UNITS$").matches(it) }
+            val unitWord = g.firstOrNull { Patterns.get("^$UNITS$").matches(it) }
             val target = cleanTarget(g.last())
-            if (target.isBlank() || Regex("^$UNITS$").matches(target)) continue
+            if (target.isBlank() || Patterns.get("^$UNITS$").matches(target)) continue
             val t = resolve(target, now, since)
             // Something with a date: a holiday, a date, a weekday, a time. Otherwise it may be a calendar event
             // ("my vacation", "the dentist"), which only the answer can check, but only for clear countdown

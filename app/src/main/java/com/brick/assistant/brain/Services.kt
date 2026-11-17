@@ -31,6 +31,26 @@ fun Context.hasPermission(p: String) =
 internal object Http {
     private const val UA = "BrickAssistant/1.0 (Android personal assistant app)"
 
+    /**
+     * When Wikipedia or Wikidata last answered 429 ("too many requests"). Their limit for Brick is about 10 requests a
+     * minute and a lookup takes 5 to 8, so a few quick questions in a row can hit it; every request in the next
+     * half minute or so fails, and a lookup that finds nothing because of it says so ([wikiBusy]) instead of
+     * sounding like the thing doesn't exist.
+     */
+    @Volatile private var wikiThrottledAt = 0L
+
+    /** Whether Wikipedia or Wikidata turned Brick away in the last [withinMs]. */
+    fun wikiBusy(withinMs: Long = 45_000L) = wikiThrottledAt != 0L && System.currentTimeMillis() - wikiThrottledAt < withinMs
+
+    private fun codeOf(c: HttpURLConnection, url: String): Int {
+        val code = c.responseCode
+        if (code == 429 && Regex("^https?://[^/]*(?:wikipedia|wikidata|wikimedia)\\.org/").containsMatchIn(url)) wikiThrottledAt = System.currentTimeMillis()
+        return code
+    }
+
+    /** What to say when a lookup came back empty because Wikipedia was busy. */
+    const val WIKI_BUSY = "Wikipedia is limiting how fast I can look things up right now. Ask me again in about half a minute."
+
     fun getJson(url: String, headers: Map<String, String> = emptyMap()): JSONObject? = try {
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 6000
@@ -38,7 +58,7 @@ internal object Http {
         c.setRequestProperty("User-Agent", UA)
         c.setRequestProperty("Accept", "application/json")
         for ((k, v) in headers) c.setRequestProperty(k, v)
-        val code = c.responseCode
+        val code = codeOf(c, url)
         val body = if (code == 200) c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) } else null
         c.disconnect()
         body?.let { JSONObject(it) }
@@ -86,7 +106,7 @@ internal object Http {
         c.setRequestProperty("User-Agent", UA)
         c.setRequestProperty("Accept", "application/json")
         for ((k, v) in headers) c.setRequestProperty(k, v)
-        val body = if (c.responseCode == 200) c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) } else null
+        val body = if (codeOf(c, url) == 200) c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) } else null
         c.disconnect()
         body
     } catch (e: Exception) {
@@ -108,7 +128,7 @@ internal object Http {
         c.connectTimeout = 6000
         c.readTimeout = 8000
         c.setRequestProperty("User-Agent", UA)
-        val body = if (c.responseCode == 200) c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) } else null
+        val body = if (codeOf(c, url) == 200) c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) } else null
         c.disconnect()
         body
     } catch (e: Exception) {
@@ -122,7 +142,7 @@ internal object Http {
         c.readTimeout = 8000
         c.setRequestProperty("User-Agent", UA)
         c.setRequestProperty("Accept", "application/json")
-        val body = if (c.responseCode == 200) c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) } else null
+        val body = if (codeOf(c, url) == 200) c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) } else null
         c.disconnect()
         body?.let { org.json.JSONArray(it) }
     } catch (e: Exception) {

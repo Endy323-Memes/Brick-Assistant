@@ -1,6 +1,7 @@
 package com.brick.assistant.brain
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.Period
@@ -82,7 +83,7 @@ object History {
 
     /** The Wikipedia title for an event as said ("ww2" -> "World War II"), or the words tidied. */
     fun title(subject: String): String {
-        val s = subject.lowercase(Locale.US).replace('-', ' ').replace(Regex("\\s+"), " ").trim().removeSuffix(" in history").trim()
+        val s = subject.lowercase(Locale.US).replace('-', ' ').replace(Patterns.get("\\s+"), " ").trim().removeSuffix(" in history").trim()
         ALIASES.firstOrNull { it.first.matches(s) }?.let { return it.second }
         return s.removePrefix("the ").trim()
     }
@@ -97,7 +98,7 @@ object History {
 
     /** A history question about an event (wars, battles, revolutions...) or "today in history"; people are [Lookup]'s. */
     fun parse(raw: String, now: LocalDate = LocalDate.now()): Request.History? {
-        var s = raw.lowercase(Locale.US).replace('’', '\'').replace(Regex("[?!.,]"), " ").replace(Regex("\\s+"), " ").trim()
+        var s = raw.lowercase(Locale.US).replace('’', '\'').replace(Patterns.get("[?!.,]"), " ").replace(Patterns.get("\\s+"), " ").trim()
         s = Colloquial.spoken(s).replace(LEAD, "").trim()
         if (s.isEmpty()) return null
         fun g(p: String) = Patterns.get(p).find(s)?.groupValues
@@ -111,12 +112,12 @@ object History {
         g("^(?:what (?:happened|went down|occurred) )?(?:on )?($MONTHS) (\\d{1,2})(?:st|nd|rd|th)? (?:in|throughout) history$|^what happened on ($MONTHS) (\\d{1,2})(?:st|nd|rd|th)?$|^(?:this day in history|on this day) (?:for )?($MONTHS) (\\d{1,2})(?:st|nd|rd|th)?$")?.let { m ->
             val month = m[1].ifEmpty { m[3].ifEmpty { m[5] } }
             val day = (m[2].ifEmpty { m[4].ifEmpty { m[6] } }).toIntOrNull()
-            val mi = Regex("^($MONTHS)$").find(month)?.let { java.time.Month.valueOf(month.uppercase(Locale.US)).value }
+            val mi = Patterns.get("^($MONTHS)$").find(month)?.let { java.time.Month.valueOf(month.uppercase(Locale.US)).value }
             if (mi != null && day != null && day in 1..31) return Request.History(HistoryAsk("$month $day", HistoryAspect.ON_THIS_DAY, mi, day))
         }
 
         fun ask(subject: String, a: HistoryAspect): Request.History? {
-            val t = subject.trim().replace(Regex("\\s+(?:please|for me|real quick|again|in history|in detail|briefly|in short|exactly|actually|all about|about|anyway|anyways|even)$"), "").trim()
+            val t = subject.trim().replace(Patterns.get("\\s+(?:please|for me|real quick|again|in history|in detail|briefly|in short|exactly|actually|all about|about|anyway|anyways|even)$"), "").trim()
             if (t.isEmpty() || t.split(' ').size > 9 || !isEvent(t)) return null
             return Request.History(HistoryAsk(t, a))
         }
@@ -202,10 +203,12 @@ object History {
         val title = title(ask.subject)
         val p = Lookup.page(title, emptySet()) ?: return@withContext null
         val name = p.title.substringBefore(" (").trim()
-        val intro = Sports.intro(p.title)?.second ?: p.extract
-        val all = sentences(intro)
+        // The intro loads while Wikidata's facts do.
+        val introAhead = async { Sports.intro(p.title) }
         val claims = p.qid?.let { Lookup.claims(it) }
         val f = if (claims != null) Lookup.factsFor(claims, listOf("P580", "P582", "P585", "P276", "P17", "P710", "P1346", "P1120", "P793", "P828", "P361", "P1542")) else emptyMap()
+        val intro = introAhead.await()?.second ?: p.extract
+        val all = sentences(intro)
 
         val start = f["P580"]?.firstOrNull()
         val end = f["P582"]?.firstOrNull()

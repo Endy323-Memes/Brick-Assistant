@@ -370,6 +370,9 @@ object Sports {
         var s = raw.lowercase(Locale.US).replace('’', '\'').replace(Patterns.get("[?!.,]"), " ").replace(Patterns.get("\\s+"), " ").trim()
         s = Colloquial.spoken(s).replace(LEAD, "").trim()
         if (s.isEmpty()) return null
+        // "play some jazz" is music, and "the newest season of the boys" is TV: team names that are also songs, genres and shows.
+        if (Patterns.get("^(?:play|put on|shuffle|queue(?: up)?|listen to|stream|watch)\\b").containsMatchIn(s)) return null
+        if (Patterns.get("\\b(?:(?:new|newest|latest|next|last|final|first) season of|seasons? \\d+ of|episodes?|tv show|the show|series finale|renewed|on (?:netflix|hulu|hbo|max|prime|disney))\\b").containsMatchIn(s)) return null
         val leagues = League.said(s)
         val league = leagues.singleOrNull()
 
@@ -648,7 +651,8 @@ object Sports {
         val years = year?.let { listOf(it) } ?: listOf(now, now - 1, now - 2)
         for (y in years) {
             val titles = if (number != null) listOf("Super Bowl ${roman(number)}") else c.pages(y)
-            val found = titles.mapNotNull { t -> pageFor(t)?.let { p -> intro(p) } }
+            // Each title (men's and women's singles) loads at the same time; the order stays.
+            val found = titles.map { t -> async { pageFor(t)?.let { p -> intro(p) } } }.awaitAll().filterNotNull()
             if (found.isEmpty()) continue
             val text = found.joinToString(" ") { it.second }
             // Not played yet ("The 2027 World Series will be..."): the one before, unless a year was asked for.

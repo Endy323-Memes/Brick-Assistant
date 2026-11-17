@@ -330,10 +330,10 @@ object Works {
     private fun parseVideoDeals(t: String): Request.Deals? {
         if (!VIDEO_WORD.containsMatchIn(t)) return null
         val tv = Patterns.get("\\b(?:tv|shows?|series|seasons?)\\b").containsMatchIn(t) && !Patterns.get("\\b(?:movies?|films?)\\b").containsMatchIn(t)
-        val genre = Prices.VIDEO_GENRES.entries.firstOrNull { (words, _) -> Regex("\\b(?:$words)\\b").containsMatchIn(t) }
+        val genre = Prices.VIDEO_GENRES.entries.firstOrNull { (words, _) -> Patterns.get("\\b(?:$words)\\b").containsMatchIn(t) }
         val span = years(t)
         val left = t.replace("'s", "").let { x -> span?.second?.let { r -> x.removeRange(r) } ?: x }
-            .let { x -> genre?.let { g -> x.replace(Regex("\\b(?:${g.key})\\b"), " ") } ?: x }
+            .let { x -> genre?.let { g -> x.replace(Patterns.get("\\b(?:${g.key})\\b"), " ") } ?: x }
             .replace(UNDER, " ").replace(DEAL_FILLER, " ").replace(VIDEO_FILLER, " ").replace(Patterns.get("[^a-z]+"), " ").trim()
         if (left.isNotEmpty()) return null
         val store = VIDEO_STORE.find(t)?.groupValues?.get(1)?.let { st ->

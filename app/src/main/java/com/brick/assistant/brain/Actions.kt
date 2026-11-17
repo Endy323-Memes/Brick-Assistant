@@ -328,7 +328,7 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         val s = settings.current
         if (s.phobias.isEmpty() || req.category != com.brick.assistant.data.Category.SEARCH && req !is Request.YouTube) return withCard(req, prepareInner(req))
         // Phobia filters: a search about a filtered subject doesn't happen at all, unless it's allowed (then no picture).
-        val asked = Phobias.hits(req.toString().replace(Regex("\\b\\w+="), " "), s.phobias)
+        val asked = Phobias.hits(req.toString().replace(Patterns.get("\\b\\w+="), " "), s.phobias)
         asked.firstOrNull { it.key !in s.phobiasAllowed }?.let { return blocked(req, it) }
         val r = withCard(req, prepareInner(req))
         // What came back can be about it too ("what's the deadliest animal in Australia" → a spider): the answer, the card's
@@ -347,6 +347,13 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         val q = when (req) {
             is Request.Search -> req.query
             is Request.Animal -> req.ask.said
+            is Request.Tech -> req.ask.said
+            is Request.PcBuild -> req.ask.said
+            is Request.Platform -> req.ask.said
+            is Request.Peripheral -> req.ask.said
+            is Request.Headgear -> req.ask.said
+            is Request.GameInfo -> req.ask.said
+            is Request.GameFind -> req.search.said
             is Request.Character -> req.ask.said
             is Request.History -> req.ask.subject
             is Request.YouTube -> req.query
@@ -403,6 +410,13 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             is Request.History -> history(req)
             is Request.Character -> character(req)
             is Request.Animal -> animal(req)
+            is Request.Tech -> tech(req)
+            is Request.PcBuild -> pcBuild(req)
+            is Request.Platform -> platform(req)
+            is Request.Peripheral -> peripheral(req)
+            is Request.Headgear -> headgear(req)
+            is Request.GameInfo -> gameInfo(req)
+            is Request.GameFind -> gameFind(req)
             is Request.Math -> math(req)
             is Request.Convert -> ActionResult(req.conversion.spoken, readout = info.conversion(req.conversion))
             is Request.Spell -> spell(req)
@@ -1042,7 +1056,7 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         var source = "OpenStreetMap"
         // The closest one lists no number: Google Maps (its page has it) beats a branch across town.
         if (phone == null && nearest != null) {
-            val at = nearest.address?.substringBefore(',')?.let { " on ${it.replace(Regex("^\\d+\\s+"), "")}" } ?: ""
+            val at = nearest.address?.substringBefore(',')?.let { " on ${it.replace(Patterns.get("^\\d+\\s+"), "")}" } ?: ""
             return ActionResult("The closest $name$at doesn't list a phone number, so I'll show it in Google Maps.") {
                 openMapsSearch("${nearest.name} ${nearest.address ?: ""}".trim())
             }
@@ -1067,7 +1081,7 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         val dial = number.filter { it.isDigit() || it == '+' }
         val where = local?.takeIf { source == "OpenStreetMap" }
         val miles = if (where != null && near != null) milesBetween(near.lat, near.lon, where.lat, where.lon) else null
-        val at = where?.address?.substringBefore(',')?.let { " on ${it.replace(Regex("^\\d+\\s+"), "")}" } ?: ""
+        val at = where?.address?.substringBefore(',')?.let { " on ${it.replace(Patterns.get("^\\d+\\s+"), "")}" } ?: ""
         // The nearest store with a number listed can be a drive away: say so.
         val far = miles?.takeIf { it >= 5 }?.let { " It's about ${it.toInt()} miles away." } ?: ""
         val line = "The number for $name$at is $number.$far"
@@ -1483,7 +1497,7 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         // with its facts. "what is photosynthesis"-style questions keep the quick answer first.
         val lq = Lookup.understand(req.query)
         if (Lookup.isEntityLookup(req.query, lq) || req.explicit) {
-            Lookup.find(lq, settings.current.tmdbKey)?.let { return lookupResult(req, it, openBrowser) }
+            Lookup.find(lq, settings.current.tmdbKey)?.let { return lookupResult(req, gameCardFor(lq, it), openBrowser) }
         }
         if (!req.explicit) {
             // Not asked to search: answer a question directly if possible, never open a web search.
@@ -1491,14 +1505,14 @@ class Actions(private val context: Context, private val settings: SettingsStore)
                 // A command Brick can't carry out ("order a pizza") isn't a topic to look up.
                 if (Wording.COMMAND.containsMatchIn(req.query)) return ActionResult("I can't do that yet.", readout = info.search(req.query, null, openBrowser))
                 // A bare topic ("the twelve days of christmas"): what it is.
-                Lookup.find(lq, settings.current.tmdbKey)?.let { return lookupResult(req, it, openBrowser) }
+                Lookup.find(lq, settings.current.tmdbKey)?.let { return lookupResult(req, gameCardFor(lq, it), openBrowser) }
                 SearchService.answer(req.query)?.let { return ActionResult(it.text, readout = info.search(req.query, it, openBrowser)) }
-                return ActionResult("I couldn't find a quick answer for that.", readout = info.search(req.query, null, openBrowser))
+                return ActionResult(if (Http.wikiBusy()) Http.WIKI_BUSY else "I couldn't find a quick answer for that.", readout = info.search(req.query, null, openBrowser))
             }
             val a = SearchService.answer(req.query)
                 // No quick answer: maybe it's a page after all ("what's baywatch").
-                ?: Lookup.find(lq, settings.current.tmdbKey)?.let { return lookupResult(req, it, openBrowser) }
-                ?: return ActionResult("I can't answer that.", readout = info.search(req.query, null, openBrowser))
+                ?: Lookup.find(lq, settings.current.tmdbKey)?.let { return lookupResult(req, gameCardFor(lq, it), openBrowser) }
+                ?: return ActionResult(if (Http.wikiBusy()) Http.WIKI_BUSY else "I can't answer that.", readout = info.search(req.query, null, openBrowser))
             return ActionResult(a.text, readout = info.search(req.query, a, openBrowser))
         }
         val answer = SearchService.answer(req.query)
@@ -1546,6 +1560,64 @@ class Actions(private val context: Context, private val settings: SettingsStore)
         return lookupResult(Request.Search(Animals.singular(req.ask.animal)), r, openResults)
     }
 
+    /** Gadget specs, a comparison, or a tech word explained; a web search when Wikipedia has nothing. */
+    private suspend fun tech(req: Request.Tech): ActionResult {
+        val openResults = { launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://duckduckgo.com/?q=${Uri.encode(req.ask.said)}"))); Unit }
+        val r = runCatching { Tech.find(req.ask) }.getOrNull() ?: return search(Request.Search(req.ask.said))
+        return lookupResult(Request.Search(req.ask.devices.joinToString(" vs ")), r, openResults)
+    }
+
+    /** A question about one game, from Steam; anything Steam doesn't have goes to Brick's other answers. */
+    private suspend fun gameInfo(req: Request.GameInfo): ActionResult {
+        val openResults = { launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://duckduckgo.com/?q=${Uri.encode(req.ask.said)}"))); Unit }
+        val r = runCatching { Games.card(req.ask) }.getOrNull()
+            ?: return prepareInner(Games.without { IntentParser.parse(req.ask.said) })
+        return lookupResult(Request.Search(req.ask.title), r, openResults)
+    }
+
+    /** Games that fit what was asked, from Steam's search. */
+    private suspend fun gameFind(req: Request.GameFind): ActionResult {
+        val openResults = { launch(Intent(Intent.ACTION_VIEW, Uri.parse(Games.searchUrl(req.search, results = false)))); Unit }
+        val r = runCatching { Games.findCard(req.search) }.getOrNull()
+            ?: return prepareInner(Games.without { IntentParser.parse(req.search.said) }).let { if (it.robotLine.isBlank()) ActionResult("I couldn't find games like that on Steam.") else it }
+        return lookupResult(Request.Search(req.search.describe()), r, openResults)
+    }
+
+    /** A plain lookup of a game ("tell me about hades") gets the GAME card when Steam has it. */
+    private suspend fun gameCardFor(lq: LookupQuery, r: LookupResult): LookupResult {
+        if (r.kind != LookupKind.GAME || lq.aspect != LookupAspect.GENERAL || r.game != null) return r
+        val title = r.title.substringBefore(" (").trim()
+        return runCatching { Games.card(GameAsk(title, GameWant.OVERVIEW, "$title game"), about = r.summary.ifBlank { null }) }.getOrNull() ?: r
+    }
+
+    /** A console or an OS from Brick's notes, or two side by side; a web search if it's somehow missing. */
+    private suspend fun platform(req: Request.Platform): ActionResult {
+        val openResults = { launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://duckduckgo.com/?q=${Uri.encode(req.ask.said)}"))); Unit }
+        val r = runCatching { Platforms.find(req.ask) }.getOrNull() ?: return search(Request.Search(req.ask.said))
+        return lookupResult(Request.Search(r.title), r, openResults)
+    }
+
+    /** A keyboard, mouse, stream controller or mic from Brick's notes, or two side by side. */
+    private suspend fun peripheral(req: Request.Peripheral): ActionResult {
+        val openResults = { launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://duckduckgo.com/?q=${Uri.encode(req.ask.said)}"))); Unit }
+        val r = runCatching { Peripherals.find(req.ask) }.getOrNull() ?: return search(Request.Search(req.ask.said))
+        return lookupResult(Request.Search(r.title), r, openResults)
+    }
+
+    /** Headphones, earbuds, a gaming headset or a VR headset from Brick's notes (or read live), or two side by side. */
+    private suspend fun headgear(req: Request.Headgear): ActionResult {
+        val openResults = { launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://duckduckgo.com/?q=${Uri.encode(req.ask.said)}"))); Unit }
+        val r = runCatching { Headgear.find(req.ask) }.getOrNull() ?: return search(Request.Search(req.ask.said))
+        return lookupResult(Request.Search(r.title), r, openResults)
+    }
+
+    /** A PC parts list for the budget and the job, drawn as the PC BUILD infographic. */
+    private suspend fun pcBuild(req: Request.PcBuild): ActionResult {
+        val openResults = { launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://duckduckgo.com/?q=${Uri.encode(req.ask.said)}"))); Unit }
+        val r = PcBuild.find(req.ask)
+        return lookupResult(Request.Search(req.ask.purpose.label), r, openResults)
+    }
+
     /** A character's traits or part in the story; a web search when Brick can't place them. */
     private suspend fun character(req: Request.Character): ActionResult {
         val openResults = { launch(Intent(Intent.ACTION_VIEW, Uri.parse("https://duckduckgo.com/?q=${Uri.encode(req.ask.said)}"))); Unit }
@@ -1556,7 +1628,8 @@ class Actions(private val context: Context, private val settings: SettingsStore)
     /** A looked-up person, movie, show, platform...: the fact you asked for, or the summary, with its card. */
     private fun lookupResult(req: Request.Search, r: LookupResult, openBrowser: () -> Unit): ActionResult {
         val openPage = { launch(Intent(Intent.ACTION_VIEW, Uri.parse(r.url))); Unit }
-        val said = r.answer ?: r.summary
+        // UNIT says the short version; the card keeps the whole answer.
+        val said = Brief.spoken(r.answer ?: r.summary)
         val line = if (req.explicit) "Here's what I found on ${r.title}. $said" else said
         val openLink: (String) -> Unit = { u -> launch(Intent(Intent.ACTION_VIEW, Uri.parse(u))) }
         return ActionResult(line, readout = info.lookup(r, openPage, openBrowser, openLink))
@@ -1929,8 +2002,11 @@ class Actions(private val context: Context, private val settings: SettingsStore)
 
     private fun math(req: Request.Math): ActionResult {
         val r = req.result
-        if (r.value.isNaN() || r.value.isInfinite()) return ActionResult("${r.spoken} is undefined.", readout = info.math(r))
-        return ActionResult("${r.spoken} equals ${r.formatted}.", readout = info.math(r))
+        if (r.tooBig) return ActionResult("${r.spoken} is too big for me: the answer has more than ${MathEvaluator.show(java.math.BigDecimal(MathEvaluator.MAX_DIGITS))} digits.", readout = info.math(r))
+        if (r.exact == null) return ActionResult("${r.spoken} is undefined.", readout = info.math(r))
+        // Past 15 digits Brick says it in powers of ten; the card has every digit.
+        val long = r.digits?.takeIf { it > 15 }?.let { ", a $it-digit number. Every digit is on the card" } ?: ""
+        return ActionResult("${r.spoken} equals ${r.formatted}$long.", readout = info.math(r))
     }
 
     // ---------------------------------------------------------------- weather
@@ -2075,6 +2151,13 @@ class Actions(private val context: Context, private val settings: SettingsStore)
             is Request.Sports -> known("search.sports.${req.ask.want.name.lowercase()}", "search.sports")
             is Request.History -> known("search.history", "search.question")
             is Request.Character -> known("search.character", "search.characters")
+            is Request.PcBuild -> known("search.tech.build", "search.tech")
+            is Request.Platform -> if (req.ask.compare) known("search.tech.platform.compare", "search.tech.platform") else known("search.tech.platform", "search.tech")
+            is Request.Peripheral -> if (req.ask.compare) known("search.tech.peripheral.compare", "search.tech.peripheral") else known("search.tech.peripheral", "search.tech")
+            is Request.Headgear -> if (req.ask.compare) known("search.tech.headgear.compare", "search.tech.headgear") else known("search.tech.headgear", "search.tech")
+            is Request.GameInfo -> known("search.game.details", "search.game")
+            is Request.GameFind -> known("search.game.find", "search.game")
+            is Request.Tech -> if (req.ask.compare && req.ask.want != TechWant.TERM) known("search.tech.compare", "search.tech") else known("search.tech", "search.question")
             is Request.Animal -> when {
                 req.ask.plant -> known("search.plant", "search.animal")
                 req.ask.bug -> known("search.bug", "search.animal")

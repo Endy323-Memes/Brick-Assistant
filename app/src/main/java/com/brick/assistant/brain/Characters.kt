@@ -1,6 +1,7 @@
 package com.brick.assistant.brain
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import java.util.Locale
 
@@ -153,19 +154,44 @@ object Characters {
         "(?:my|your|our|his|her|their|its|this|that|a|an|some|any)\\b.*|" +
         "the (?:phone|wifi|wi fi|signal|battery|internet|connection|tv|television|light|lights|lamp|room|house|car|game|match|movie|film|show|episode|season|series|song|album|music|playlist|food|water|coffee|market|stock|stocks|economy|team|offense|defense|app|update|sun|moon|wind|storm|rain|snow|traffic|plan|idea|test|exam|price|deal|sale|volume|brightness|screen|camera|computer|laptop|pc|console|server|network|news|air|sky|ocean|sea|city|town|road|beach)\\b.*)$")
 
+    // The question patterns below, compiled once: they hold every trait and role phrase, so building them is slow.
+    private val SPACES = Regex("\\s+")
+    private val LEAD_IN = Regex("^(?:hey |ok |okay )?(?:brick )?(?:so |and |but |also |um |uh )*")
+    private val OPINION = Regex("^(?:do you think|would you say|would you agree|i wonder|i'm wondering|i was wondering|i want to know|tell me|can you tell me|could you tell me|do you know|let me know|is it true|be honest|honestly|in your opinion|in your view)(?: that)?\\s+")
+    private val OPINION_ASK = Regex("^(.+?) (is|was) ((?:$MODS)(?:$PHRASE_ALT)$TAIL$WORK)$")
+    private val IF_ASK = Regex("^(?:if|whether) (.+?) (is|was|are|were) (.+)$")
+    private val CALL_ASK = Regex("^(?:would|do|did|does|could) (?:you|people|fans|most people) (?:call|consider|describe|see|think of|view) (.+?) (?:to be |as )?((?:a |an |the )?(?:$PHRASE_ALT)$TAIL$WORK)$")
+    private val EITHER_ASK = Regex("^(?:is|was|are|were) (.+?) $MODS($PHRASE_ALT)$TAIL or $MODS($PHRASE_ALT)$TAIL$WORK$")
+    private val IS_ASK = Regex("^(?:is|was|are|were|isn't|wasn't) (.+?) $MODS($PHRASE_ALT)$TAIL$WORK$")
+    private val HOW_ASK = Regex("^how ($PHRASE_ALT) (?:is|was|are|were) (.+?)$WORK$")
+    private val POWERS_ASK = Regex("^(?:does|did) (.+?) (?:have|has) (?:any )?(?:super ?powers|powers|special powers|abilities|special abilities|super strength|magic|magical powers)$WORK$")
+    private val KIND_ASK = Regex("^what (?:kind|sort|type) of (?:character|role) (?:is|was) (.+?)$WORK$")
+    private val GOOD_BAD_ASK = Regex("^(?:is|was) (.+?) (?:a |an |the )?(?:good|bad) (?:guy|person|character) or (?:a |an |the )?(?:good|bad) (?:guy|person|character)$WORK$")
+    private const val PERSONALITY = "personality|personality traits|character traits|traits|attitude|demeanor|demeanour|temperament"
+    private val PERSONALITY_ASKS = listOf(
+        Regex("^(?:what(?:'s| is| was| are| were)? |describe |tell me about |explain |give me |list |summarize |sum up )?(?:the )?(.+?)(?:'s|s'| s) (?:$PERSONALITY)(?: like)?$WORK$"),
+        Regex("^what(?:'s| is| was) (?:the )?(.+?)(?:'s|s') character like$WORK$"),
+        Regex("^(?:what(?:'s| is| was| are| were)? |describe |tell me about |explain |list )?(?:the )?(?:$PERSONALITY) (?:of|for) (.+?)$WORK$"),
+        Regex("^what (?:kind|sort|type) of (?:a )?(?:person|guy|girl|man|woman|dude|being|personality) (?:is|was) (.+?)$WORK$"),
+        Regex("^(?:what(?:'s| is| was) (.+?) like as an? (?:character|person|guy|girl))$WORK$"),
+        Regex("^(?:describe|characterize) (.+?)(?: as an? (?:character|person))$WORK$"),
+        Regex("^how would you (?:describe|characterize) (.+?)(?: as an? (?:character|person))?$WORK$"),
+        Regex("^(?:what )?(?:traits|qualities|characteristics) (?:does|did) (.+?) have$WORK$"),
+    )
+    private val WORK_WORD_END = Regex("\\b(?:show|movie|film|series|book|game)$")
+
     /** Reads a question about a character (or anyone with a story): "is walter white the protagonist", "is goku powerful", "describe sheldon's personality". */
     fun parse(raw: String): Request.Character? {
-        var s = raw.lowercase(Locale.US).trim().replace(Regex("\\s+"), " ").replace('’', '\'')
-        s = s.replace(Regex("^(?:hey |ok |okay )?(?:brick )?(?:so |and |but |also |um |uh )*"), "")
-        val opinion = Regex("^(?:do you think|would you say|would you agree|i wonder|i'm wondering|i was wondering|i want to know|tell me|can you tell me|could you tell me|do you know|let me know|is it true|be honest|honestly|in your opinion|in your view)(?: that)?\\s+")
-        val asked = opinion.containsMatchIn(s)
-        s = s.replace(opinion, "")
+        var s = raw.lowercase(Locale.US).trim().replace(SPACES, " ").replace('’', '\'')
+        s = s.replace(LEAD_IN, "")
+        val asked = OPINION.containsMatchIn(s)
+        s = s.replace(OPINION, "")
         // "do you think the joker is insane" -> "is the joker insane" (only after a lead-in: "spotify is slow" is a complaint).
-        if (asked) Regex("^(.+?) (is|was) ((?:$MODS)(?:$PHRASE_ALT)$TAIL$WORK)$").find(s)?.let { s = "${it.groupValues[2]} ${it.groupValues[1]} ${it.groupValues[3]}" }
+        if (asked) OPINION_ASK.find(s)?.let { s = "${it.groupValues[2]} ${it.groupValues[1]} ${it.groupValues[3]}" }
         // "if walter white is smart" -> "is walter white smart".
-        Regex("^(?:if|whether) (.+?) (is|was|are|were) (.+)$").find(s)?.let { s = "${it.groupValues[2]} ${it.groupValues[1]} ${it.groupValues[3]}" }
+        IF_ASK.find(s)?.let { s = "${it.groupValues[2]} ${it.groupValues[1]} ${it.groupValues[3]}" }
         // "would you call walter white smart", "do you consider vader a villain".
-        Regex("^(?:would|do|did|does|could) (?:you|people|fans|most people) (?:call|consider|describe|see|think of|view) (.+?) (?:to be |as )?((?:a |an |the )?(?:$PHRASE_ALT)$TAIL$WORK)$").find(s)?.let {
+        CALL_ASK.find(s)?.let {
             s = "is ${it.groupValues[1]} ${it.groupValues[2]}"
         }
         s = s.removeSuffix(" or not").removeSuffix(" right").trim()
@@ -182,7 +208,7 @@ object Characters {
         }
 
         // "is walter white a main character or a side character", "is zuko a good guy or a bad guy", "is light smart or dumb".
-        Regex("^(?:is|was|are|were) (.+?) $MODS($PHRASE_ALT)$TAIL or $MODS($PHRASE_ALT)$TAIL$WORK$").find(s)?.let { m ->
+        EITHER_ASK.find(s)?.let { m ->
             val a = PHRASE_OF[m.groupValues[2]]; val b = PHRASE_OF[m.groupValues[3]]
             return when {
                 a is CharRole && b is CharRole -> ask(m.groupValues[1], CharacterWant.WHICH_ROLE, m.groupValues[4], null)
@@ -191,40 +217,32 @@ object Characters {
             }
         }
         // "is walter white the protagonist of breaking bad", "is goku powerful", "was dwight schrute arrogant".
-        Regex("^(?:is|was|are|were|isn't|wasn't) (.+?) $MODS($PHRASE_ALT)$TAIL$WORK$").find(s)?.let { m ->
-            val what = PHRASE_OF[m.groupValues[2].replace(Regex("\\s+"), " ")] ?: return null
+        IS_ASK.find(s)?.let { m ->
+            val what = PHRASE_OF[m.groupValues[2].replace(SPACES, " ")] ?: return null
             return ask(m.groupValues[1], if (what is CharRole) CharacterWant.ROLE else CharacterWant.TRAIT, m.groupValues[3], what)
         }
         // "how smart is sheldon cooper", "how powerful is goku in dragon ball".
-        Regex("^how ($PHRASE_ALT) (?:is|was|are|were) (.+?)$WORK$").find(s)?.let { m ->
+        HOW_ASK.find(s)?.let { m ->
             val what = PHRASE_OF[m.groupValues[1]] as? Trait ?: return null
             return ask(m.groupValues[2], CharacterWant.TRAIT, m.groupValues[3], what)
         }
         // "does goku have powers", "does superman have super strength".
-        Regex("^(?:does|did) (.+?) (?:have|has) (?:any )?(?:super ?powers|powers|special powers|abilities|special abilities|super strength|magic|magical powers)$WORK$").find(s)?.let { m ->
+        POWERS_ASK.find(s)?.let { m ->
             return ask(m.groupValues[1], CharacterWant.TRAIT, m.groupValues[2], trait("powerful"))
         }
         // "what kind of character is jesse pinkman", "what role does gus fring have in breaking bad".
-        Regex("^what (?:kind|sort|type) of (?:character|role) (?:is|was) (.+?)$WORK$").find(s)?.let { m ->
+        KIND_ASK.find(s)?.let { m ->
             return ask(m.groupValues[1], CharacterWant.WHICH_ROLE, m.groupValues[2], null)
         }
-        Regex("^(?:is|was) (.+?) (?:a |an |the )?(?:good|bad) (?:guy|person|character) or (?:a |an |the )?(?:good|bad) (?:guy|person|character)$WORK$").find(s)?.let { m ->
+        GOOD_BAD_ASK.find(s)?.let { m ->
             return ask(m.groupValues[1], CharacterWant.WHICH_ROLE, m.groupValues[2], null)
         }
         // Personality: "describe sheldon's personality", "what is homer simpson like as a person", "what kind of person is walter white".
         // ("what is bryan cranston's character in breaking bad" asks who he plays: "character" only with "like".)
-        val personality = "personality|personality traits|character traits|traits|attitude|demeanor|demeanour|temperament"
-        (Regex("^(?:what(?:'s| is| was| are| were)? |describe |tell me about |explain |give me |list |summarize |sum up )?(?:the )?(.+?)(?:'s|s'| s) (?:$personality)(?: like)?$WORK$").find(s)
-            ?: Regex("^what(?:'s| is| was) (?:the )?(.+?)(?:'s|s') character like$WORK$").find(s)
-            ?: Regex("^(?:what(?:'s| is| was| are| were)? |describe |tell me about |explain |list )?(?:the )?(?:$personality) (?:of|for) (.+?)$WORK$").find(s)
-            ?: Regex("^what (?:kind|sort|type) of (?:a )?(?:person|guy|girl|man|woman|dude|being|personality) (?:is|was) (.+?)$WORK$").find(s)
-            ?: Regex("^(?:what(?:'s| is| was) (.+?) like as an? (?:character|person|guy|girl))$WORK$").find(s)
-            ?: Regex("^(?:describe|characterize) (.+?)(?: as an? (?:character|person))$WORK$").find(s)
-            ?: Regex("^how would you (?:describe|characterize) (.+?)(?: as an? (?:character|person))?$WORK$").find(s)
-            ?: Regex("^(?:what )?(?:traits|qualities|characteristics) (?:does|did) (.+?) have$WORK$").find(s))?.let { m ->
+        PERSONALITY_ASKS.firstNotNullOfOrNull { it.find(s) }?.let { m ->
             // "the character of the show" isn't a name; neither is "describe the weather".
             val n = m.groupValues[1]
-            if (Regex("\\b(?:show|movie|film|series|book|game)$").containsMatchIn(n)) return null
+            if (WORK_WORD_END.containsMatchIn(n)) return null
             return ask(n, CharacterWant.PERSONALITY, m.groupValues.getOrNull(2), null)
         }
         return null
@@ -490,7 +508,8 @@ object Characters {
      */
     suspend fun find(ask: CharacterAsk): LookupResult? = withContext(Dispatchers.IO) {
         val words = listOfNotNull(ask.work?.let { "$it character" }, "character")
-        val p = Lookup.page(ask.name, emptySet(), words)?.takeIf { matchesName(ask.name, it.title) || ask.work != null }
+        // The page found is often the show or a list (no claims needed), so they aren't loaded ahead.
+        val p = Lookup.page(ask.name, emptySet(), words, claimsAhead = false)?.takeIf { matchesName(ask.name, it.title) || ask.work != null }
         var work = ask.work
         var main: Source? = null
         var image: String? = null
@@ -501,8 +520,8 @@ object Characters {
             val firstLine = p.extract.take(400)
             val isCharacter = CHARACTER_DESC.containsMatchIn(desc) || Regex("\\bfictional character\\b|\\bcharacter (?:in|from)\\b", RegexOption.IGNORE_CASE).containsMatchIn(firstLine)
             if ((isCharacter || p.kind == LookupKind.PERSON) && matchesName(ask.name, p.title)) {
-                val text = wikiText(p.title)
-                if (text != null) main = Source(p.title, p.url, "Wikipedia", sections(text))
+                // The article loads while Wikidata's facts do.
+                val textAhead = async { wikiText(p.title) }
                 image = p.image
                 description = p.description
                 p.qid?.let { Lookup.claims(it) }?.let { c ->
@@ -511,6 +530,8 @@ object Characters {
                     // Wikidata's "present in work" names the show plainly ("Breaking Bad", not "the AMC series Breaking Bad").
                     if (work == null) work = f["P1441"]?.firstOrNull()
                 }
+                val text = textAhead.await()
+                if (text != null) main = Source(p.title, p.url, "Wikipedia", sections(text))
                 work = work ?: workOf(desc) ?: workOf(Regex("^[^.]+").find(firstLine)?.value)
             } else if (p.kind in setOf(LookupKind.TV_SHOW, LookupKind.MOVIE, LookupKind.BOOK, LookupKind.GAME)) {
                 work = work ?: p.title.substringBefore(" (")

@@ -3,6 +3,7 @@ package com.brick.assistant.brain
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.time.LocalDate
@@ -82,6 +83,8 @@ enum class LookupAspect {
     KNOWN_FOR,
     /** "what controversies has mrbeast been in", "why is logan paul controversial", "pewdiepie drama". */
     CONTROVERSY,
+    /** "who wrote the great gatsby", "author of dune", "who composed bohemian rhapsody". */
+    AUTHOR,
 }
 
 /**
@@ -110,6 +113,20 @@ data class LookupResult(
     val links: List<Pair<String, String>> = emptyList(),
     /** The card's heading when it isn't the kind ("HISTORY"). */
     val heading: String? = null,
+    /** More titled sections under the list ("HOW IT UNLOCKS", "WHY IT MATTERS"). */
+    val more: List<Pair<String, List<String>>> = emptyList(),
+    /** Two devices head to head: drawn as the VERSUS card instead. */
+    val versus: Versus? = null,
+    /** A suggested PC build: drawn as the PC BUILD infographic. */
+    val build: PcBuild.Build? = null,
+    /** One game's Steam details: drawn as the GAME infographic. */
+    val game: Games.Info? = null,
+    /** A console or an operating system: drawn as the CONSOLE or OS card. */
+    val platform: Platforms.Entry? = null,
+    /** A keyboard, mouse, stream controller or mic: drawn as its own card. */
+    val peripheral: Peripherals.Device? = null,
+    /** Headphones, earbuds, a gaming headset or a VR headset: drawn as its own card. */
+    val headgear: Headgear.Device? = null,
 )
 
 object Lookup {
@@ -119,7 +136,8 @@ object Lookup {
         LookupAspect.BIRTHDAY to "^when (?:is|was) .+? born$|^when (?:is|was) (?:the )?birthday of |\\b(?:'s|s) birthday$|^what(?:'s| is) .+?(?:'s|s) birthday$|^(?:where|when) was .+ born$",
         LookupAspect.CAST to "^who(?:'s| is| was| are| were) (?:in|starring in|starred in|the (?:cast|actors|stars) (?:of|in)) |^(?:the )?cast (?:of|for) |^who (?:plays|played|acts|acted|stars|starred) in |^who (?:stars|starred|acts|acted|plays|played)$|^actors (?:in|from) ",
         LookupAspect.RELEASE to "^when (?:did|does|will) .+? (?:come out|release|premiere|air|launch|drop|debut|start)$|^when (?:was|is) .+? (?:released|made|out|launched|created|filmed)$|^what year (?:did|was|is) |^release date (?:of|for) |\\b(?:'s|s) release date$",
-        LookupAspect.DIRECTOR to "^who (?:directed|made|directs) |^(?:the )?director of |^who(?:'s| is| was) the director of ",
+        LookupAspect.AUTHOR to "^who (?:wrote|writes|authored|penned|composed) |^(?:the )?(?:author|writer|composer|songwriter) of |^who(?:'s| is| was) the (?:author|writer|composer|songwriter) of ",
+        LookupAspect.DIRECTOR to "^who (?:directed|made|directs)|^(?:the )?director of |^who(?:'s| is| was) the director of ",
         LookupAspect.FOUNDER to "^who (?:founded|created|started|invented|made|owns|runs|built) |^(?:the )?(?:founder|creator|inventor|ceo) of |^who(?:'s| is| was) the (?:founder|creator|ceo|owner|inventor) of ",
         LookupAspect.FOUNDED to "^when (?:was|were) .+? (?:founded|started|created|established|invented)$|^when did .+? (?:start|launch|begin)$",
         LookupAspect.NET_WORTH to "\\bnet worth\\b|^how rich is |^how much (?:money )?(?:is|does) .+? (?:worth|make|have)$",
@@ -145,6 +163,7 @@ object Lookup {
         // Cut the asking words around the subject.
         t = t.replace(Patterns.get("^how old (?:is|was|are|were) |^what(?:'s| is) the age of |^age of |^when (?:is|was) |^when (?:did|does|will) |^what year (?:did|was|is) |" +
             "^who(?:'s| is| was| are| were) (?:in|starring in|starred in|the (?:cast|actors|stars) (?:of|in)) |^(?:the )?cast (?:of|for) |" +
+            "^who (?:wrote|writes|authored|penned|composed) |^(?:the )?(?:author|writer|composer|songwriter) of |^who(?:'s| is| was) the (?:author|writer|composer|songwriter) of |" +
             "^who (?:plays|played|acts|acted|stars|starred) in |^actors (?:in|from) |^who (?:directed|made|directs|founded|created|started|invented|owns|runs|built) |" +
             "^(?:the )?(?:director|founder|creator|inventor|ceo|owner) of |^who(?:'s| is| was) the (?:director|founder|creator|ceo|owner|inventor) of |" +
             "^release date (?:of|for) |^how rich is |^how many (?:seasons|episodes) (?:does|did|of|are there of|are in|is) |^how long is |^(?:runtime|run time|length) of |" +
@@ -152,13 +171,13 @@ object Lookup {
         t = t.replace(LEAD, "")
         t = t.replace(Patterns.get("\\s+(?:born|come out|came out|released|release|premiere|air|launch|launched|drop|debut|start|made|out|created|filmed|founded|" +
             "started|established|invented|headquartered|based|located|worth|make|have|net worth|'s net worth|s net worth|'s age|'s birthday|s birthday|" +
-            "'s release date|have|run|go)$"), "")
+            "'s release date|have|run|go|are there|is there|in total|total|altogether)$"), "")
         t = t.replace(Patterns.get("\\s+(?:please|for me|real quick|right now|again|on (?:the )?(?:web|internet|google|wikipedia)|online)$"), "")
         t = t.replace(Patterns.get("^(?:about|on|of) "), "").trim()
         // A kind said with the subject: "the movie baywatch", "baywatch the movie", "the app discord", "actor tom hanks".
         var kind: LookupKind? = null
         kindSaid(t)?.let { (k, subject) -> kind = k; t = subject }
-        if (kind == null && Patterns.get("^(?:who(?:'s| is| was| are| were)|how old|when was .+ born)\\b").containsMatchIn(s) && aspect !in setOf(LookupAspect.CAST, LookupAspect.DIRECTOR, LookupAspect.FOUNDER)) {
+        if (kind == null && Patterns.get("^(?:who(?:'s| is| was| are| were)|how old|when was .+ born)\\b").containsMatchIn(s) && aspect !in setOf(LookupAspect.CAST, LookupAspect.DIRECTOR, LookupAspect.FOUNDER, LookupAspect.AUTHOR)) {
             kind = LookupKind.PERSON
         }
         if (kind == null) kind = when (aspect) {
@@ -401,13 +420,19 @@ object Lookup {
     /**
      * Finds the page for [subject]: the first search hit whose description is one of [accept] (any kind when empty),
      * skipping disambiguation pages. [searchWords] are tried with the subject first ("dune film", "dune TV series").
+     * [claimsAhead]: load the page's Wikidata claims alongside its summary, for callers that read them next.
      */
-    suspend fun page(subject: String, accept: Set<LookupKind>, searchWords: List<String> = emptyList()): Page? = withContext(Dispatchers.IO) {
+    suspend fun page(subject: String, accept: Set<LookupKind>, searchWords: List<String> = emptyList(), claimsAhead: Boolean = true): Page? = withContext(Dispatchers.IO) {
         val terms = searchWords.filter { it.isNotEmpty() }.map { "$subject $it" } + subject
         var pick: Pair<String, String?>? = null
+        // Each hit's Wikidata item, so its facts can load while the summary does.
+        val items = HashMap<String, String>()
         for (term in terms) {
-            val r = wiki("https://en.wikipedia.org/w/api.php?action=query&format=json&generator=search&gsrlimit=8&prop=description&gsrsearch=${Http.enc(term)}")
+            val r = wiki("https://en.wikipedia.org/w/api.php?action=query&format=json&generator=search&gsrlimit=8&prop=description|pageprops&ppprop=wikibase_item&gsrsearch=${Http.enc(term)}")
             val pages = r?.optJSONObject("query")?.optJSONObject("pages") ?: continue
+            for (k in pages.keys()) pages.optJSONObject(k)?.let { o ->
+                o.optJSONObject("pageprops")?.optString("wikibase_item")?.ifBlank { null }?.let { items[o.optString("title")] = it }
+            }
             val list = pages.keys().asSequence().mapNotNull { pages.optJSONObject(it) }
                 .sortedBy { it.optInt("index", 99) }
                 .map { it.optString("title") to it.optString("description").ifBlank { null } }
@@ -421,6 +446,8 @@ object Lookup {
             if (pick != null && (accept.isEmpty() || LookupKind.classify(pick.second) in accept)) break
         }
         val title = pick?.first ?: return@withContext null
+        // Every caller reads the page's Wikidata claims next: they load alongside the summary and wait in the cache.
+        if (claimsAhead) items[title]?.let { qid -> launch { claims(qid) } }
         val sum = wiki("https://en.wikipedia.org/api/rest_v1/page/summary/${Http.enc(title.replace(' ', '_'))}") ?: return@withContext null
         val extract = sum.optString("extract").ifBlank { return@withContext null }
         val desc = sum.optString("description").ifBlank { pick.second }
@@ -466,9 +493,13 @@ object Lookup {
         val isCharacter = p.description?.let { CHARACTER_PAGE.containsMatchIn(it) } == true
         val kind = if (isCharacter) null else p.kind ?: q.kind
         val claims = p.qid?.let { claims(it) }
+        // The card's other Wikidata names (review sites, the cast) load alongside the facts.
+        val scoresAhead = if (claims != null && (kind == LookupKind.MOVIE || kind == LookupKind.TV_SHOW || kind == LookupKind.GAME)) async { reviewScores(claims) } else null
+        val castAhead = if (claims != null && q.aspect in setOf(LookupAspect.CAST, LookupAspect.CHARACTERS, LookupAspect.ROLE)) async { credits(claims) } else null
         val more = when (q.aspect) {
             LookupAspect.CHARACTERS -> listOf("P674")
             LookupAspect.RUNTIME, LookupAspect.SEASONS -> listOf("P2047", "P1104", "P1113", "P2437", "P175", "P50")
+            LookupAspect.AUTHOR -> listOf("P50", "P86", "P676", "P58", "P170")
             else -> emptyList()
         } + if (isCharacter) listOf("P175", "P725", "P1441") else emptyList()
         val facts = if (claims != null) facts(claims, kind, more) else emptyMap()
@@ -478,7 +509,8 @@ object Lookup {
             LookupExtras.forKind(kind, name, (facts["P175"] ?: facts["P50"])?.firstOrNull(), year(facts["P577"]?.firstOrNull() ?: facts["P580"]?.firstOrNull()),
                 q.album || p.description?.let { ALBUM_PAGE.containsMatchIn(it) } == true, tmdbKey)
         } else null
-        build(q, p.title, p.description, kind, shorten(p.extract), p.image, p.url, claims, facts, extra, listOf("Wikipedia", "Wikidata"), isCharacter)
+        build(q, p.title, p.description, kind, shorten(p.extract), p.image, p.url, claims, facts, extra, listOf("Wikipedia", "Wikidata"), isCharacter,
+            scoresAhead?.await(), castAhead?.await(), lead = p.extract)
     }
 
     private fun Credit.said() = if (character != null) "$actor as $character" else actor
@@ -516,14 +548,18 @@ object Lookup {
             .maxWithOrNull(compareBy<Pair<Credit, Int>> { it.second }.thenBy { -it.first.character!!.length })?.first
     }
 
-    /** The result card and answer for [q], from Wikipedia/Wikidata ([claims], [facts]) and/or another source ([extra]). */
+    /**
+     * The result card and answer for [q], from Wikipedia/Wikidata ([claims], [facts]) and/or another source ([extra]).
+     * [scores] and [wdCast0]: the review scores and Wikidata cast when already loaded (else they load here).
+     */
     private suspend fun build(
         q: LookupQuery, title: String, description: String?, kind: LookupKind?, summary0: String, image: String?, url: String,
         claims: JSONObject?, facts: Map<String, List<String>>, extra: MediaExtra?, sources0: List<String>, isCharacter: Boolean = false,
+        scores: List<ReviewScore>? = null, wdCast0: List<Credit>? = null, lead: String? = null,
     ): LookupResult {
-        val rows = factRows(kind, facts).toMutableList()
+        val rows = factRows(kind, castFirst(facts, lead)).toMutableList()
         if (claims != null && (kind == LookupKind.MOVIE || kind == LookupKind.TV_SHOW || kind == LookupKind.GAME)) {
-            MediaGuide.shortScores(reviewScores(claims))?.let { rows += "RATED" to it }
+            MediaGuide.shortScores(scores ?: reviewScores(claims))?.let { rows += "RATED" to it }
         }
         val name = title.substringBefore(" (").trim()
         val sources = sources0.toMutableList()
@@ -543,7 +579,7 @@ object Lookup {
             row("EPS", extra.episodes?.toString())
             row("GENRE", list(extra.genres, 2))
         }
-        val wdCast = if (claims != null && q.aspect in setOf(LookupAspect.CAST, LookupAspect.CHARACTERS, LookupAspect.ROLE)) credits(claims) else emptyList()
+        val wdCast = wdCast0 ?: if (claims != null && q.aspect in setOf(LookupAspect.CAST, LookupAspect.CHARACTERS, LookupAspect.ROLE)) credits(claims) else emptyList()
         // TVmaze's main cast and TMDB's billing order beat Wikidata's unordered list; Wikidata beats Apple and Steam (no cast).
         val cast = when {
             extra != null && extra.cast.isNotEmpty() && (extra.source == "TVmaze" || extra.source == "TMDB" || wdCast.none { it.character != null }) -> extra.cast.also { used(extra) }
@@ -624,8 +660,12 @@ object Lookup {
                 if (answer == null && kind in WORKS) answer = "I couldn't find how long $name is."
             }
             LookupAspect.AWARDS -> {
-                val (wins, noms) = if (claims != null) awards(claims) else emptyList<String>() to emptyList()
-                val acc = LookupExtras.accolades(name)
+                // Wikidata's awards and Wikipedia's accolades page load side by side.
+                val (awarded, acc) = coroutineScope {
+                    val accAhead = async { LookupExtras.accolades(name) }
+                    (if (claims != null) awards(claims) else emptyList<String>() to emptyList()) to accAhead.await()
+                }
+                val (wins, noms) = awarded
                 // Wikipedia's list says the counts in words ("received thirteen nominations ... winning seven: Best Picture, ...").
                 val accSentences = acc?.second?.let { Patterns.get("(?<=[.!?])\\s+(?=[A-Z])").split(it) }.orEmpty()
                     .map {
@@ -696,7 +736,12 @@ object Lookup {
         val creator = Creators.isCreator(description, summary0)
         if (q.aspect == LookupAspect.CONTROVERSY || creator && q.aspect in setOf(LookupAspect.GENERAL, LookupAspect.KNOWN_FOR)) {
             val names = Characters.tokens(name)
-            val said = Creators.controversies(Characters.wikiText(title).orEmpty(), names)
+            // The article (for controversies) and the intro (for who they are) load side by side.
+            val (article, introLoaded) = coroutineScope {
+                val introAhead = if (q.aspect != LookupAspect.CONTROVERSY) async { Sports.intro(title) } else null
+                Characters.wikiText(title) to introAhead?.await()
+            }
+            val said = Creators.controversies(article.orEmpty(), names)
             val channel = if (creator) Creators.channel(claims) else null
             channel?.subscribers?.let { row("SUBS", Creators.bigCount(it) + (channel.asOf?.take(4)?.let { y -> " ($y)" } ?: "")) }
             channel?.let { links += "YouTube" to it.url }
@@ -706,7 +751,7 @@ object Lookup {
             }
             answer = if (q.aspect == LookupAspect.CONTROVERSY) Creators.spoken(name, said) else {
                 // "Who is mrbeast": who they are and what they're known for, then the controversies in a line.
-                val intro = Sports.intro(title)?.second ?: summary0
+                val intro = introLoaded?.second ?: summary0
                 val all = Patterns.get("(?<=[.!?])\\s+(?=[A-Z])").split(intro.replace(Patterns.get("\\s*\\([^)]*\\)"), "")).map { it.trim() }.filter { it.length > 25 }
                 val known = all.drop(1).firstOrNull { Patterns.get("\\b(?:known for|best known|famous for|popular for|rose to (?:fame|prominence)|gained (?:fame|popularity|prominence)|recognized for|noted for|videos|channel|content)\\b", true).containsMatchIn(it) }
                 // Said short: what they're known for and the subscribers; the card has the rest (and the controversies).
@@ -839,7 +884,7 @@ object Lookup {
                 val v = c.optJSONObject("mainsnak")?.optJSONObject("datavalue") ?: return@mapNotNull null
                 when (v.optString("type")) {
                     "time" -> v.optJSONObject("value")?.optString("time")
-                    "wikibase-entityid" -> v.optJSONObject("value")?.optString("id")?.also { itemIds += it }?.let { "Q:$it" }
+                    "wikibase-entityid" -> v.optJSONObject("value")?.optString("id")?.let { "Q:$it" }
                     "quantity" -> v.optJSONObject("value")?.let { q ->
                         val amount = q.optString("amount").removePrefix("+")
                         val unit = q.optString("unit").substringAfterLast('/')
@@ -857,9 +902,26 @@ object Lookup {
                     else -> null
                 }
             }
-            if (values.isNotEmpty()) raw[p] = values.take(when (p) { "P161" -> 6; "P674" -> 15; else -> 4 })
+            if (values.isEmpty()) continue
+            val kept = values.take(when (p) { "P161" -> 12; "P674" -> 15; else -> 4 })
+            raw[p] = kept
+            // Only the kept values need names (a show can list 58 actors).
+            kept.forEach { if (it.startsWith("Q:")) itemIds += it.removePrefix("Q:") }
+        }
+        // Each listed actor's character (qualifier P453), named in the same request: the card puts the leads first by them.
+        val roles = ArrayList<Pair<String, String>>()
+        all.optJSONArray("P161")?.takeIf { "P161" in raw }?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val c = arr.optJSONObject(i)?.takeIf { it.optString("rank") != "deprecated" } ?: continue
+                val actor = c.optJSONObject("mainsnak")?.optJSONObject("datavalue")?.optJSONObject("value")?.optString("id") ?: continue
+                if ("Q:$actor" !in raw["P161"].orEmpty()) continue
+                val role = c.optJSONObject("qualifiers")?.optJSONArray("P453")?.optJSONObject(0)?.optJSONObject("datavalue")?.optJSONObject("value")?.optString("id") ?: continue
+                roles += actor to role
+                itemIds += role
+            }
         }
         val labels = labels(itemIds.take(80))
+        val roleRows = roles.mapNotNull { (a, r) -> labels[a]?.let { an -> labels[r]?.let { rn -> "$an=$rn" } } }.distinct()
         raw.mapValues { (_, vs) ->
             vs.mapNotNull { v ->
                 val s = v as String
@@ -869,8 +931,11 @@ object Lookup {
                     else -> s
                 }
             }.distinct()
-        }.filterValues { it.isNotEmpty() }
+        }.filterValues { it.isNotEmpty() } + (if (roleRows.isEmpty()) emptyMap() else mapOf(ROLES to roleRows))
     }
+
+    /** The facts key for "Actor=Character" pairs (not a Wikidata property). */
+    private const val ROLES = "P161:P453"
 
     /** Wikidata's facts for [props], by property (for [History]). */
     suspend fun factsFor(claims: JSONObject, props: List<String>): Map<String, List<String>> = facts(claims, null, props)
@@ -904,6 +969,24 @@ object Lookup {
         if (born!!.substring(5, 10) == "00-00") return null
         val end = date(died) ?: LocalDate.now()
         return Period.between(b, end).years
+    }
+
+    /**
+     * Wikidata lists a cast in no particular order (Breaking Bad's put Bryan Cranston sixth, off the card), so the actors
+     * the article's intro mentions come first, in the order it mentions them; the rest keep Wikidata's order. The intro
+     * Brick gets drops the leads' names ("the series follows Walter White ... with Jesse Pinkman") while it names the
+     * supporting cast outright, so an actor counts from the first mention of their character or of their own name.
+     * Spaces are evened out first (Wikipedia joins some names with a no-break space).
+     */
+    internal fun castFirst(f: Map<String, List<String>>, lead: String?): Map<String, List<String>> {
+        val cast = f["P161"] ?: return f
+        if (lead.isNullOrBlank()) return f
+        fun plain(s: String) = s.replace(Regex("[\\s\\u00A0\\u202F\\u2007]+"), " ").lowercase(Locale.US)
+        val text = plain(lead)
+        fun at(name: String) = text.indexOf(plain(name)).let { if (it < 0) Int.MAX_VALUE else it }
+        val roles = f[ROLES].orEmpty().mapNotNull { r -> r.split('=', limit = 2).takeIf { it.size == 2 } }.groupBy({ it[0] }, { it[1] })
+        val first = cast.associateWith { a -> (roles[a].orEmpty().map { at(it) } + at(a)).min() }
+        return f + ("P161" to cast.sortedBy { first[it] })
     }
 
     private fun list(v: List<String>?, n: Int = 3) = v?.take(n)?.let { l ->
@@ -994,6 +1077,7 @@ object Lookup {
         LookupAspect.RELEASE -> (year(f["P577"]?.firstOrNull()) ?: year(f["P580"]?.firstOrNull()))?.let {
             pretty(f["P577"]?.firstOrNull())?.let { d -> "$name came out on $d." } ?: "$name came out in $it."
         }
+        LookupAspect.AUTHOR -> (list(f["P50"], 2) ?: list(f["P676"], 3) ?: list(f["P86"], 3) ?: list(f["P58"], 2) ?: list(f["P170"], 2))?.let { "$name was written by $it." }
         LookupAspect.DIRECTOR -> list(f["P57"], 2)?.let { "$name was directed by $it." } ?: list(f["P170"], 2)?.let { "$name was created by $it." }
         LookupAspect.FOUNDER -> list(f["P112"] ?: f["P170"] ?: f["P178"] ?: f["P50"], 3)?.let { "$name was founded by $it." }
         LookupAspect.FOUNDED -> year(f["P571"]?.firstOrNull() ?: f["P577"]?.firstOrNull())?.let { "$name was founded in $it." }

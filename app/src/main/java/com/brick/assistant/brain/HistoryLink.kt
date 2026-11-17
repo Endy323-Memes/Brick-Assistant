@@ -84,6 +84,13 @@ object HistoryLink {
         is Request.History -> req.ask.subject
         is Request.Character -> req.ask.name
         is Request.Animal -> Animals.singular(req.ask.animal)
+        is Request.Tech -> req.ask.devices.joinToString(" vs ")
+        is Request.PcBuild -> req.ask.purpose.label
+        is Request.Platform -> req.ask.ids.mapNotNull { Platforms.byId(it)?.name }.joinToString(" vs ")
+        is Request.Peripheral -> req.ask.ids.joinToString(" vs ") { Peripherals.label(it) }
+        is Request.Headgear -> req.ask.ids.joinToString(" vs ") { Headgear.label(it) }
+        is Request.GameInfo -> req.ask.title
+        is Request.GameFind -> req.search.describe()
         is Request.Spell -> req.word
         is Request.News -> req.query ?: req.topic.name.lowercase()
         is Request.Ranked -> listOfNotNull(req.kind.name.lowercase(), req.filter).joinToString(" ")

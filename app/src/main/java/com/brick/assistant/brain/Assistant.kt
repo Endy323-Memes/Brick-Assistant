@@ -101,11 +101,14 @@ class Assistant(
         val now = System.currentTimeMillis()
         val follow = pendingDictation?.let { now - it.second < CONFIRM_WINDOW_MS } == true ||
             pending?.let { now - it.second < CONFIRM_WINDOW_MS } == true
-        val saved = HistoryLink.turn(input, if (follow) null else runCatching { topic?.request(input) ?: IntentParser.parse(input) }.getOrNull(), follow)
-        turn(input, topic) { e -> onEvent(saved?.invoke(e) ?: e) }
+        // Read once: the same request is filed in Brick History and answered.
+        val req = if (follow) null else runCatching { topic?.request(input) ?: IntentParser.parse(input) }.getOrNull()
+        val saved = HistoryLink.turn(input, req, follow)
+        turn(input, topic, req) { e -> onEvent(saved?.invoke(e) ?: e) }
     }
 
-    private suspend fun turn(input: String, topic: Topic? = null, onEvent: (LogEntry) -> Unit) {
+    /** [parsed]: [input] already read as a request (by [handle]), so it isn't read twice. */
+    private suspend fun turn(input: String, topic: Topic? = null, parsed: Request? = null, onEvent: (LogEntry) -> Unit) {
         returnToCardUntil = 0L
         // Dictation in progress: what you said is the note itself.
         val d = pendingDictation?.takeIf { System.currentTimeMillis() - it.second < CONFIRM_WINDOW_MS }
@@ -128,7 +131,7 @@ class Assistant(
             }
         }
 
-        val req = topic?.request(input) ?: IntentParser.parse(input)
+        val req = parsed ?: topic?.request(input) ?: IntentParser.parse(input)
         // Not understood, but close to a command ("unable lpf"): ask whether that's what you meant.
         if (req is Request.Search && !req.explicit) {
             IntentParser.suggest(input)?.let { fixed ->

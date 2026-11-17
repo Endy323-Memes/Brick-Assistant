@@ -1,6 +1,7 @@
 package com.brick.assistant.brain
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -173,8 +174,10 @@ object Franchise {
                     out += Film(o.optString("title").ifBlank { continue }, date, o.optDouble("popularity"), rating = tmdbRating(o))
                 }
             }
-            add(Http.getJsonCached(url("/search/movie?query=${Http.enc(q)}"), headers)?.optJSONArray("results"))
+            // The movie and collection searches go out together; the movies are still added first.
+            val moviesAhead = async { Http.getJsonCached(url("/search/movie?query=${Http.enc(q)}"), headers) }
             val coll = Http.getJsonCached(url("/search/collection?query=${Http.enc(q)}"), headers)?.optJSONArray("results")?.optJSONObject(0)
+            add(moviesAhead.await()?.optJSONArray("results"))
             if (coll != null && core(coll.optString("name")).contains(core(q))) {
                 val parts = Http.getJsonCached(url("/collection/${coll.optInt("id")}"), headers)?.optJSONArray("parts")
                 // Collection parts are the series even when the titles don't say so ("Rogue One").

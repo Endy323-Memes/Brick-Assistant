@@ -399,6 +399,26 @@ class Infographics(private val context: Context) {
 
     /** A looked-up person, movie, show, platform...: its kind as the title, its facts, the summary, and its picture. */
     fun lookup(r: LookupResult, openPage: () -> Unit, openResults: () -> Unit, openLink: (String) -> Unit = {}): Readout {
+        r.versus?.let { return versus(r, it, openPage, openResults, openLink) }
+        r.build?.let { return Readout(buildText(it, r.answer, r.more), image = r.image, controls = listOf(Control.Button("Web results", openResults))) }
+        r.peripheral?.let { return Readout(Peripherals.text(it, r.answer), controls = listOf(Control.Button(if (it.liveUrl != null) "${it.maker}'s page" else "Web results", openPage))) }
+        r.headgear?.let { return Readout(Headgear.text(it, r.answer), controls = listOf(Control.Button(if (it.liveUrl != null) (if (it.liveFrom == "Wikipedia" || it.liveFrom == "SoundGuys") it.liveFrom else "${it.maker}'s page") else "Web results", openPage))) }
+        r.platform?.let { return Readout(Platforms.text(it, r.answer), image = r.image, controls = listOf(Control.Button("Wikipedia", openPage), Control.Button("Web results", openResults))) }
+        r.game?.let { g ->
+            val controls = buildList {
+                add(Control.Button("Steam", openPage))
+                g.cheapest?.takeIf { it.store != "Steam" && it.url != null }?.let { c -> add(Control.Button(c.store) { openLink(c.url!!) }) }
+                add(Control.Button("Web results", openResults))
+            }
+            return Readout(gameText(g, r.answer, r.summary), image = r.image, controls = controls)
+        }
+        if (r.heading == "GAMES" && r.list.isNotEmpty()) {
+            val controls = buildList {
+                add(Control.Button("Open in Steam", openPage))
+                r.links.take(3).forEach { (name, u) -> add(Control.Button(name.take(22)) { openLink(u) }) }
+            }
+            return Readout(gamesText(r), image = r.image, controls = controls)
+        }
         val rows = ArrayList<String>()
         rows += Box.wrap(Box.ascii(r.title), max = 2)
         r.description?.let { rows += Box.wrap(it, max = 2) }
@@ -411,6 +431,12 @@ class Infographics(private val context: Context) {
             rows += ""
             rows += r.listTitle ?: "MORE"
             for (item in r.list) rows += Box.wrap(Box.ascii(item), "- ", indent = 2, max = 2)
+        }
+        for ((head, items) in r.more) {
+            if (items.isEmpty()) continue
+            rows += ""
+            rows += head
+            for (item in items) rows += Box.wrap(Box.ascii(item), if (items.size > 1) "- " else "", indent = if (items.size > 1) 2 else 0, max = 6)
         }
         if (r.summary.isNotBlank()) {
             rows += ""
@@ -426,6 +452,224 @@ class Infographics(private val context: Context) {
             add(Control.Button("Web results", openResults))
         }
         return Readout(Box.build(title, rows), image = r.image, controls = controls)
+    }
+
+    /**
+     * Two devices head to head: A and B named up top, the verdict, then each number as a pair of bars
+     * (the winner marked "<"), then the specs that are words (chip, unlock, USB) side by side.
+     */
+    fun versus(r: LookupResult, v: Versus, openPage: () -> Unit, openResults: () -> Unit, openLink: (String) -> Unit): Readout {
+        val controls = buildList {
+            if (r.url.isNotBlank()) add(Control.Button(v.a.substringBefore(" (")) { openPage() })
+            r.links.forEach { (_, u) -> add(Control.Button(v.b.substringBefore(" (")) { openLink(u) }) }
+            add(Control.Button("Web results", openResults))
+        }
+        return Readout(versusText(v, r.more, r.sources), image = r.image, controls = controls)
+    }
+
+    companion object {
+    /** The GAME card: studio and release, prices across stores, reviews, tags, art style, VR, controls, systems, languages. */
+    fun gameText(g: Games.Info, answer: String?, about: String?): String {
+        val rows = ArrayList<String>()
+        val w = Box.W
+        rows += Box.wrap(Box.ascii(g.name), max = 2)
+        answer?.let { rows += ""; rows += Box.wrap(it, "> ", indent = 2, max = 4) }
+        rows += ""
+        fun kv(label: String, value: String?, max: Int = 2) { if (!value.isNullOrBlank()) rows += Box.wrap(Box.ascii(value), first = Box.kv(label, ""), indent = 7, max = max) }
+        kv("DEV", g.developers.take(3).joinToString(", "))
+        kv("PUB", g.publishers.take(3).joinToString(", "))
+        kv("OUT", g.released + if (g.comingSoon) " (coming soon)" else "")
+        kv("GENRE", g.genres.take(4).joinToString(", "))
+        kv("MODES", Games.modes(g).joinToString(", "))
+
+        // Prices at each store, cheapest marked.
+        val prices = g.prices.sortedBy { it.now }
+        if (prices.isNotEmpty()) {
+            rows += ""
+            rows += "PRICE"
+            val top = prices.maxOf { it.now }.coerceAtLeast(0.01)
+            val barW = (w - 26).coerceIn(4, 16)
+            val low = prices.first().now
+            for (p in prices.take(6)) {
+                val shown = if (p.now <= 0.0) "Free" else Prices.money(p.now)
+                val filled = if (p.now <= 0) 0 else Math.ceil(p.now / top * barW).toInt().coerceAtLeast(1)
+                rows += p.store.replace("Epic Games Store", "Epic").replace("Green Man Gaming", "GMG").take(8).padEnd(9) + shown.padEnd(8) +
+                    Box.bar(filled, barW) + (if (p.onSale) " -${p.off}%".padEnd(5) else "     ") + (if (p.now == low && prices.size > 1) " <" else "")
+            }
+        } else if (g.comingSoon) { rows += ""; kv("PRICE", "Not out yet") }
+
+        // Reviews.
+        val pct = g.percent
+        if (pct != null || g.metacritic != null) {
+            rows += ""
+            rows += "REVIEWS"
+            val barW = (w - 13).coerceIn(5, 20)
+            pct?.let { p ->
+                rows += Box.kv("STEAM", Box.bar(Math.round(p / 100.0 * barW).toInt(), barW) + " $p%")
+                rows += Box.wrap("${Games.reviewWord(p, g.reviewCount ?: 0)}, ${String.format(java.util.Locale.US, "%,d", g.reviewCount ?: 0)} reviews", first = " ".repeat(7), indent = 7, max = 2)
+            }
+            g.metacritic?.let { m -> rows += Box.kv("META", Box.bar(Math.round(m / 100.0 * barW).toInt(), barW) + " $m") }
+        }
+
+        if (g.tags.isNotEmpty()) { rows += ""; rows += "TAGS"; rows += Box.wrap(g.tags.take(10).joinToString(", "), max = 4) }
+        Games.styles(g).takeIf { it.isNotEmpty() }?.let { rows += ""; rows += "ART STYLE"; rows += Box.wrap(it.joinToString(", ").replace("Pixel Graphics", "Pixel art"), max = 2) }
+
+        rows += ""
+        kv("VR", Games.vrLine(g))
+        kv("INPUT", Games.inputs(g).joinToString(", "), max = 4)
+        fun mark(b: Boolean) = if (b) "[x]" else "[ ]"
+        rows += Box.kv("OS", "${mark(g.windows)} Windows ${mark(g.mac)} Mac ${mark(g.linux)} Linux").let { if (it.length > w) Box.kv("OS", Games.osList(g).joinToString(", ")) else it }
+        kv("DECK", Games.deckWord(g.deck))
+
+        if (g.languages.isNotEmpty()) {
+            val audio = g.languages.count { it.audio }
+            rows += ""
+            rows += "LANGUAGES (${g.languages.size}" + (if (audio > 0) ", * = full audio)" else ")")
+            rows += Box.wrap(Box.ascii(g.languages.joinToString(", ") { it.name + if (it.audio) "*" else "" }), max = 5)
+        }
+        about?.takeIf { it.isNotBlank() }?.let { rows += ""; rows += "ABOUT"; rows += Box.wrap(Box.ascii(it), max = 6) }
+        rows += ""
+        rows += Box.wrap("Steam, SteamSpy, CheapShark", first = Box.kv("SOURCE", ""), indent = 7, max = 2)
+        return Box.build("GAME", rows)
+    }
+
+    /** The GAMES card: what was searched for and the best matches on Steam. */
+    fun gamesText(r: LookupResult): String {
+        val rows = ArrayList<String>()
+        rows += Box.wrap(Box.ascii(r.title), max = 2)
+        r.answer?.let { rows += ""; rows += Box.wrap(it, "> ", indent = 2, max = 4) }
+        rows += ""
+        for ((label, value) in r.facts) rows += Box.wrap(Box.ascii(value), first = Box.kv(label, ""), indent = 7, max = 2)
+        rows += ""
+        rows += r.listTitle ?: "TOP MATCHES"
+        for (item in r.list) {
+            val name = item.substringBefore(" - ")
+            rows += Box.wrap(Box.ascii(name), max = 2)
+            item.substringAfter(" - ", "").takeIf { it.isNotBlank() }?.let { rows += Box.wrap(Box.ascii(it), first = "   ", indent = 3, max = 2) }
+        }
+        rows += ""
+        rows += Box.wrap(r.sources.joinToString(", "), first = Box.kv("SOURCE", ""), indent = 7, max = 2)
+        return Box.build("GAMES", rows)
+    }
+
+    /** The PC BUILD card: parts and where the money goes, game frame rates, benchmarks, what it's good for, power. */
+    fun buildText(b: PcBuild.Build, answer: String?, more: List<Pair<String, List<String>>>): String {
+        val rows = ArrayList<String>()
+        val w = Box.W
+        rows += Box.wrap(PcBuild.title(b), max = 2)
+        rows += Box.wrap(listOfNotNull(b.cpu.name, b.gpu?.name).joinToString(" + "), max = 2)
+        rows += ""
+        rows += Box.kv("TOTAL", PcBuild.money(b.total) + (b.ask.budget?.let { " of ${PcBuild.money(it)}" } ?: ""))
+        b.ask.budget?.let { budget ->
+            val used = b.total.toDouble() / budget
+            val barW = (w - 12).coerceIn(5, 30)
+            rows += Box.bar(Math.ceil(minOf(used, 1.0) * barW).toInt(), barW) + " " + "${(used * 100).toInt()}%".padStart(4) + if (used > 1) " !" else ""
+        }
+        answer?.let { rows += ""; rows += Box.wrap(it, "> ", indent = 2, max = 4) }
+
+        // Parts, each with its share of the price.
+        rows += ""
+        rows += "PARTS AND PRICE"
+        val parts = listOf("CPU" to b.cpu.name to b.cpu.price, "GPU" to (b.gpu?.name ?: "Built-in graphics") to (b.gpu?.price ?: 0),
+            "BOARD" to b.board.name to b.board.price, "RAM" to b.ram.name to b.ram.price, "SSD" to b.ssd.name to b.ssd.price,
+            "PSU" to b.psu.name to b.psu.price, "COOLER" to b.cooler.name to b.cooler.price, "CASE" to b.case.name to b.case.price)
+        val shareW = (w - 20).coerceIn(5, 20)
+        for ((lp, price) in parts) {
+            val (label, name) = lp
+            rows += Box.wrap(name, first = Box.kv(label, ""), indent = 7, max = 2)
+            val share = if (b.total > 0) price.toDouble() / b.total else 0.0
+            rows += " ".repeat(7) + PcBuild.money(price).padEnd(7) + Box.bar(Math.ceil(share * shareW).toInt(), shareW) + "${(share * 100).toInt()}%".padStart(4)
+        }
+
+        // Game frame rates.
+        rows += ""
+        rows += "AAA GAMES (EST. FPS, HIGH)"
+        val nameW = (w - 18).coerceIn(10, 20)
+        rows += "".padEnd(nameW) + PcBuild.Res.values().joinToString("") { it.label.padStart(6) }
+        for (g in PcBuild.GAMES) rows += g.name.take(nameW).padEnd(nameW) + PcBuild.Res.values().joinToString("") { PcBuild.fps(b, g, it).toString().padStart(6) }
+        rows += Box.wrap("Native, no ray tracing; upscaling adds more. 60+ is smooth, 144+ suits fast monitors.", max = 3)
+
+        // Benchmarks against the slowest and fastest chips on Brick's list.
+        val benchW = (w - 16).coerceIn(5, 25)
+        fun bench(label: String, v: Int, top: Int) = label.padEnd(6) + String.format(java.util.Locale.US, "%,d", v).padStart(7) + " " + Box.bar(Math.ceil(v.toDouble() / top * benchW).toInt(), benchW)
+        rows += ""
+        rows += "CPU: CINEBENCH 2024 MULTI (EST.)"
+        val cbTop = PcBuild.cinebench(PcBuild.CPUS.maxByOrNull { it.multi }!!)
+        rows += bench("THIS", PcBuild.cinebench(b.cpu), cbTop)
+        rows += bench("TOP", cbTop, cbTop)
+        rows += bench("ENTRY", PcBuild.cinebench(PcBuild.CPUS.minByOrNull { it.multi }!!), cbTop)
+        rows += ""
+        rows += "GPU: 3DMARK TIME SPY (EST.)"
+        val tsTop = PcBuild.GPUS.maxOf { it.timeSpy }
+        rows += bench("THIS", PcBuild.timeSpy(b), tsTop)
+        rows += bench("TOP", tsTop, tsTop)
+        rows += bench("ENTRY", PcBuild.GPUS.minOf { it.timeSpy }, tsTop)
+
+        // What it's good for.
+        rows += ""
+        rows += "WHAT IT CAN DO"
+        val labelW = (w - 17).coerceIn(12, 18)
+        for ((what, n) in PcBuild.ratings(b)) rows += what.padEnd(labelW) + Box.bar(n, 5) + " " + PcBuild.ratingWord(n)
+
+        // Power.
+        val p = PcBuild.power(b)
+        rows += ""
+        rows += "POWER"
+        rows += Box.kv("PSU", "${p.psu} W, ${p.rating}")
+        val powW = (w - 21).coerceIn(5, 20)
+        fun load(label: String, watts: Int) = Box.kv(label, "${watts} W".padEnd(7)) + Box.bar(Math.ceil(watts.toDouble() / p.psu * powW).toInt(), powW) + "${watts * 100 / p.psu}%".padStart(5)
+        rows += load("GAMING", p.gaming)
+        rows += load("PEAK", p.peak)
+        rows += Box.wrap("Pulls ~${p.wallGaming} W from the wall while gaming; ~${p.wallMax} W at most (the full ${p.psu} W). ${p.psu - p.peak} W spare for upgrades.", max = 4)
+
+        for ((head, items) in more) {
+            if (items.isEmpty() || head == "WHAT TO EXPECT") continue
+            rows += ""
+            rows += head
+            for (item in items) rows += Box.wrap(Box.ascii(item), "- ", indent = 2, max = 5)
+        }
+        rows += ""
+        rows += Box.wrap("Estimates from Brick's parts list; real results vary by game, settings and drivers.", first = Box.kv("SOURCE", ""), indent = 7, max = 3)
+        return Box.build("PC BUILD", rows)
+    }
+
+    /** The VERSUS card's text (see [versus]). */
+    fun versusText(v: Versus, more: List<Pair<String, List<String>>>, sources: List<String>): String {
+        val rows = ArrayList<String>()
+        rows += Box.wrap(v.a, "A  ", indent = 3, max = 2)
+        rows += Box.wrap(v.b, "B  ", indent = 3, max = 2)
+        val wins = v.bars.filter { it.tag != null }.mapNotNull { it.winner }
+        if (wins.isNotEmpty()) rows += "SCORE  A ${wins.count { it == 0 }} - ${wins.count { it == 1 }} B"
+        rows += ""
+        rows += Box.wrap(v.verdict, "> ", indent = 2, max = 3)
+        val valW = 10
+        val barW = (Box.W - valW - 9).coerceIn(5, 20)
+        for (bar in v.bars) {
+            rows += ""
+            rows += bar.label
+            val top = maxOf(bar.a ?: 0.0, bar.b ?: 0.0)
+            listOf(Triple("A", bar.a, bar.showA), Triple("B", bar.b, bar.showB)).forEachIndexed { i, (side, value, show) ->
+                val filled = if (value == null || top <= 0) 0 else Math.ceil(value / top * barW).toInt().coerceAtLeast(1)
+                val mark = if (bar.tag != null && bar.winner == i) " <" else ""
+                rows += "$side " + (show ?: "n/a").take(valW).padEnd(valW) + " " + Box.bar(filled, barW) + mark
+            }
+        }
+        for (w in v.words) {
+            rows += ""
+            rows += w.label
+            rows += Box.wrap(w.a ?: "not listed", "A ", indent = 2, max = 2)
+            rows += Box.wrap(w.b ?: "not listed", "B ", indent = 2, max = 2)
+        }
+        for ((head, items) in more) {
+            if (items.isEmpty()) continue
+            rows += ""
+            rows += head
+            for (item in items) rows += Box.wrap(Box.ascii(item), if (items.size > 1) "- " else "", indent = if (items.size > 1) 2 else 0, max = 6)
+        }
+        rows += ""
+        rows += Box.wrap(sources.joinToString(", "), first = Box.kv("SOURCE", ""), indent = 7, max = 2)
+        return Box.build("VERSUS", rows)
+    }
     }
 
     /** A unit conversion: the answer, the factor, and the same amount in a few nearby units. */
@@ -520,7 +764,13 @@ class Infographics(private val context: Context) {
         r.steps.take(8).forEachIndexed { i, s -> rows += Box.wrap(s, "${i + 1}) ", max = 2) }
         if (r.steps.size > 8) rows += "   ... ${r.steps.size - 8} more steps"
         rows += ""
-        rows += Box.kv("ANSWER", MathEvaluator.plain(r.value))
+        // A long number has no spaces to wrap at: break it after its commas instead.
+        val parts = r.shown.split(Regex("(?<=,)"))
+        val lines = ArrayList<String>()
+        for (p in parts) if (lines.isNotEmpty() && lines.last().length + p.length <= Box.W - 7) lines[lines.size - 1] += p else lines += p
+        if (lines.size == 1 || r.shown.contains(' ')) rows += Box.wrap(r.shown, first = Box.kv("ANSWER", ""), indent = 7, max = 16)
+        else lines.take(16).forEachIndexed { i, l -> rows += if (i == 0) Box.kv("ANSWER", l) else " ".repeat(7) + l }
+        r.digits?.takeIf { it > 15 }?.let { rows += Box.kv("DIGITS", MathEvaluator.show(java.math.BigDecimal(it))) }
         return Readout(Box.build("MATH", rows))
     }
 

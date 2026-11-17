@@ -245,9 +245,9 @@ object Publications {
                 "independent", "the independent", "verge", "guardian", "deadline", "variety", "wired", "polygon", "economist", "axios", "politico")
             val before = t.substring(0, m.range.first).trimEnd()
             val after = t.substring(m.range.last + 1).trimStart()
-            if (short && !Regex("$INTRO$").containsMatchIn(before) && !Patterns.get("^(?:news|articles?|stories|headlines|reports?|reporting|coverage)\\b").containsMatchIn(after) &&
+            if (short && !Patterns.get("$INTRO$").containsMatchIn(before) && !Patterns.get("^(?:news|articles?|stories|headlines|reports?|reporting|coverage)\\b").containsMatchIn(after) &&
                 !before.endsWith("the") && !m.value.startsWith("the ")) continue
-            val intro = Regex("\\s*$INTRO\\s*$").find(before)
+            val intro = Patterns.get("\\s*$INTRO\\s*$").find(before)
             return p to ((intro?.range?.first ?: m.range.first)..m.range.last)
         }
         return null

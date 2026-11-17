@@ -190,15 +190,15 @@ object Colloquial {
             val m = re.find(t) ?: continue
             t = t.substring(0, m.range.first) + f(m) + t.substring(m.range.last + 1)
         }
-        return t.replace(Regex("\\s+"), " ").trim()
+        return t.replace(Patterns.get("\\s+"), " ").trim()
     }
 
     fun early(s: String) = apply(s, EARLY)
     fun late(s: String) = apply(s, LATE)
 
     /** "gas near me", "best tacos nearby": a bare "near me" search reads as a find-places request. */
-    fun nearby(s: String): String? =
-        r("^(?!find|show|where|navigate|directions|take|drive|get|is|are|any|how|what|weather|news|events?)(.+?) (?:near me|nearby|around here|close by|around me|in the area)$").find(s)?.let { "find ${it.groupValues[1]} near me" }
+    fun nearby(s: String): String? = NEARBY.find(s)?.let { "find ${it.groupValues[1]} near me" }
+    private val NEARBY = r("^(?!find|show|where|navigate|directions|take|drive|get|is|are|any|how|what|weather|news|events?)(.+?) (?:near me|nearby|around here|close by|around me|in the area)$")
 
     private val JOKES = listOf(
         "I tried to write a joke about the cloud. It went over everyone's head.",
@@ -212,23 +212,23 @@ object Colloquial {
 
     /** Small talk Brick answers itself: "how are you", "good morning", "what can you do", "tell me a joke". */
     fun chat(s: String): String? {
-        val t = s.lowercase(Locale.US).replace(Regex("[^a-z' ]"), " ").replace(Regex("\\s+"), " ").trim()
+        val t = s.lowercase(Locale.US).replace(Patterns.get("[^a-z' ]"), " ").replace(Patterns.get("\\s+"), " ").trim()
         return when {
-            Regex("^(?:how are you|how are you doing|how's it going|how is it going|how you doing|how ya doing|what's up|whats up|sup|wassup|what's good|you good|you okay|how have you been)(?: brick)?(?: today)?$").matches(t) ->
+            Patterns.get("^(?:how are you|how are you doing|how's it going|how is it going|how you doing|how ya doing|what's up|whats up|sup|wassup|what's good|you good|you okay|how have you been)(?: brick)?(?: today)?$").matches(t) ->
                 "Operational. Awaiting your request."
-            Regex("^good (morning|afternoon|evening)(?: brick)?$").matches(t) -> "Good ${Regex("morning|afternoon|evening").find(t)!!.value}. What do you need?"
-            Regex("^(?:good night|goodnight|night night|nighty night)(?: brick)?$").matches(t) -> "Good night."
-            Regex("^(?:who (?:made|created|built|programmed|designed) you|who are you|what are you|what's your name|what is your name|who's brick|who is brick)$").matches(t) ->
+            Patterns.get("^good (morning|afternoon|evening)(?: brick)?$").matches(t) -> "Good ${Patterns.get("morning|afternoon|evening").find(t)!!.value}. What do you need?"
+            Patterns.get("^(?:good night|goodnight|night night|nighty night)(?: brick)?$").matches(t) -> "Good night."
+            Patterns.get("^(?:who (?:made|created|built|programmed|designed) you|who are you|what are you|what's your name|what is your name|who's brick|who is brick)$").matches(t) ->
                 "I'm Brick, the assistant on this phone."
-            Regex("^(?:what can you do|what do you do|what are you capable of|what can i ask(?: you)?|what can i say|help|help me|what are your commands|what commands do you know|how do i use you)$").matches(t) ->
+            Patterns.get("^(?:what can you do|what do you do|what are you capable of|what can i ask(?: you)?|what can i say|help|help me|what are your commands|what commands do you know|how do i use you)$").matches(t) ->
                 "Timers, alarms, reminders, notes, texts and calls, music, weather, directions and places nearby, news, " +
                     "movie, show, game and book lookups, math and conversions, and your phone's settings. Just ask the way you'd say it."
-            Regex("^(?:never ?mind|forget it|forget about it|nothing|no thanks|nah|nope|scratch that|ignore that|my bad|oops)$").matches(t) -> "Okay."
-            Regex("^(?:you're|you are|ur|youre) (?:awesome|great|the best|amazing|cool|smart|helpful|a legend|goated)$|^(?:good job|nice job|great job|well done|nice work|love you|i love you|good bot|nice|cool|awesome|perfect|great)(?: brick)?$").matches(t) ->
+            Patterns.get("^(?:never ?mind|forget it|forget about it|nothing|no thanks|nah|nope|scratch that|ignore that|my bad|oops)$").matches(t) -> "Okay."
+            Patterns.get("^(?:you're|you are|ur|youre) (?:awesome|great|the best|amazing|cool|smart|helpful|a legend|goated)$|^(?:good job|nice job|great job|well done|nice work|love you|i love you|good bot|nice|cool|awesome|perfect|great)(?: brick)?$").matches(t) ->
                 "Noted. Thank you."
-            Regex("^(?:you're|you are|ur|youre) (?:dumb|stupid|useless|bad|annoying|wrong)$|^(?:bad bot|that's wrong|thats wrong|wrong)$").matches(t) ->
+            Patterns.get("^(?:you're|you are|ur|youre) (?:dumb|stupid|useless|bad|annoying|wrong)$|^(?:bad bot|that's wrong|thats wrong|wrong)$").matches(t) ->
                 "Understood. Try asking another way and I'll take another run at it."
-            Regex("^(?:tell me a joke|say something funny|make me laugh|got any jokes|know any jokes|tell me another joke|another joke|joke)$").matches(t) -> JOKES.random()
+            Patterns.get("^(?:tell me a joke|say something funny|make me laugh|got any jokes|know any jokes|tell me another joke|another joke|joke)$").matches(t) -> JOKES.random()
             else -> null
         }
     }

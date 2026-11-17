@@ -141,7 +141,7 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
         visibility = View.GONE
     }
     private val typeButton = text(12.5f, textMid, bold = true).apply {
-        text = "[ ⌨ type ]"
+        label("[ ⌨ type ]")
         setPadding(0, (4 * d).toInt(), (12 * d).toInt(), (4 * d).toInt())
         setOnClickListener { if (typing) stopTyping() else startTyping() }
     }
@@ -151,7 +151,7 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
 
     /** Shown from the moment Brick starts answering (not while listening, thinking or typing). */
     private val askButton = text(12.5f, amber, bold = true).apply {
-        text = "[ 🎙 Talk to Brick ]"
+        label("[ 🎙 Talk to Brick ]")
         setPadding(0, (4 * d).toInt(), (12 * d).toInt(), (4 * d).toInt())
         visibility = View.GONE
         setOnClickListener { setAskAgain(false); onAskAgain?.invoke() }
@@ -190,12 +190,12 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
     fun setMuted(brick: Boolean, unit: Boolean) {
         muteBrick = brick
         muteUnit = unit
-        muteButton.text = when {
+        muteButton.label(when {
             brick && unit -> "[ 🔇 muted ]"
             brick -> "[ 🔇 brick ]"
             unit -> "[ 🔇 unit ]"
             else -> "[ 🔊 mute ]"
-        }
+        })
         muteButton.setTextColor(if (brick || unit) red else textMid)
         onMute?.invoke(brick, unit)
         render(force = true)
@@ -208,7 +208,7 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
         typing = true
         askButton.visibility = View.GONE
         typeRow.visibility = View.VISIBLE
-        typeButton.text = "[ 🎙 talk ]"
+        typeButton.label("[ 🎙 talk ]")
         onStartTyping?.invoke()
         render(force = true)
         input.requestFocus()
@@ -221,7 +221,7 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
         imm()?.hideSoftInputFromWindow(input.windowToken, 0)
         input.clearFocus()
         typeRow.visibility = View.GONE
-        typeButton.text = "[ ⌨ type ]"
+        typeButton.label("[ ⌨ type ]")
         onStartTalking?.invoke()
     }
 
@@ -269,14 +269,39 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
         typeRow.addView(send)
         content.addView(typeRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = (6 * d).toInt() })
         // Bottom row: the type / talk switch on the left, room on the right for the meter.
-        val bottom = LinearLayout(context).apply {
+        val bottom = object : LinearLayout(context) {
+            /** Buttons never run under the meter: when the full labels don't fit, shorten them ("Talk to Brick" to "talk", then icons only). */
+            override fun onMeasure(widthSpec: Int, heightSpec: Int) {
+                val room = MeasureSpec.getSize(widthSpec) - paddingLeft - paddingRight
+                val buttons = listOf(askButton, typeButton, muteButton)
+                for (stage in 0..2) {
+                    for (b in buttons) {
+                        val full = b.tag as? String ?: continue
+                        val t = when {
+                            stage == 0 -> full
+                            stage == 2 -> full.replace(Regex("^\\[ (\\S+) .+ \\]$"), "[ $1 ]")
+                            b === askButton -> "[ 🎙 talk ]"
+                            else -> full
+                        }
+                        if (b.text.toString() != t) b.text = t
+                    }
+                    val need = buttons.filter { it.visibility != View.GONE }.sumOf {
+                        it.measure(MeasureSpec.UNSPECIFIED, MeasureSpec.UNSPECIFIED); it.measuredWidth
+                    }
+                    if (need <= room || MeasureSpec.getMode(widthSpec) == MeasureSpec.UNSPECIFIED) break
+                }
+                super.onMeasure(widthSpec, heightSpec)
+            }
+        }.apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
+            // The meter is drawn over the bottom right: keep that strip (its width plus a gap) clear.
+            setPadding(0, 0, (14 * 7.5f * d - 2.5f * d + 10 * d).toInt(), 0)
             addView(askButton)
             addView(typeButton)
             addView(muteButton)
         }
-        muteButton.text = "[ 🔊 mute ]"
+        muteButton.label("[ 🔊 mute ]")
         content.addView(bottom, LinearLayout.LayoutParams(-1, (30 * d).toInt()).apply { topMargin = (2 * d).toInt() })
         addView(content, LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         minimumHeight = (128 * d).toInt()
@@ -288,6 +313,9 @@ class TermCard(context: Context) : FrameLayout(context), AssistUi {
         }
         setState(PulseView.Mode.LISTENING, "Go ahead…")
     }
+
+    /** Sets a bottom-row button's full label; the row may show it shortened when space is tight. */
+    private fun TextView.label(s: String) { tag = s; text = s; requestLayout() }
 
     private fun text(sp: Float, color: Int, bold: Boolean = false) = TextView(context).apply {
         setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)

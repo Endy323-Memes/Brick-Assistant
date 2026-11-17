@@ -105,6 +105,8 @@ fun HistoryScreen(onOpen: (String, String) -> Unit) {
                 }
                 TermLine("[  OK  ]", TermBlue, "requests on the same topic are grouped into one query")
                 TermLine("[ INFO ]", RobotColor, "no queries yet. ask brick something.")
+                Spacer(Modifier.height(14.dp))
+                StorageBar(version)
             }
         } else {
             GrepBar(query, "search queries", onQuery = { query = it })
@@ -117,6 +119,7 @@ fun HistoryScreen(onOpen: (String, String) -> Unit) {
                     color = TextMid,
                 )
             }
+            StorageBar(version, Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
             // A chat that moved to the top (a new request) shows: the list follows it instead of the old first one.
             val listState = rememberLazyListState()
             LaunchedEffect(list?.firstOrNull()?.id) { listState.scrollToItem(0) }

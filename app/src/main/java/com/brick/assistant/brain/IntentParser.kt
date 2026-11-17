@@ -97,6 +97,20 @@ sealed class Request(val category: Category?) {
     data class Character(val ask: CharacterAsk) : Request(Category.SEARCH)
     /** An animal: lifespan, diet, habitat, prey, predators, discovery, extinction. */
     data class Animal(val ask: AnimalAsk) : Request(Category.SEARCH)
+    /** Gadget specs, comparisons and tech words ("what is the s26 ultra", "iphone 11 vs pixel 9a", "what is a gpu"). */
+    data class Tech(val ask: TechAsk) : Request(Category.SEARCH)
+    /** A suggested PC build for a budget and a purpose ("build me a pc for $1500", "baller pc", "video editing rig"). */
+    data class PcBuild(val ask: BuildAsk) : Request(Category.SEARCH)
+    /** A console or an operating system: maker, owner, power, exclusives, kernel, users; or two compared ("ps5 vs xbox", "windows or linux for gaming"). */
+    data class Platform(val ask: PlatformAsk) : Request(Category.SEARCH)
+    /** A keyboard, mouse, stream controller or mic: switches, keycaps, polling, battery, side buttons, wheel; or two compared. */
+    data class Peripheral(val ask: GearAsk) : Request(Category.SEARCH)
+    /** Headphones, earbuds, a gaming headset or a VR headset: noise cancelling, battery, codecs, fit; screens, tracking, PC VR; or two compared. */
+    data class Headgear(val ask: HeadAsk) : Request(Category.SEARCH)
+    /** A question about one game: genre, tags, art style, languages, controls, VR, systems, studio, price, reviews. */
+    data class GameInfo(val ask: GameAsk) : Request(Category.SEARCH)
+    /** Games found by what they're like ("cozy pixel art games on mac", "vr only horror games under $20"). */
+    data class GameFind(val search: GameSearch) : Request(Category.SEARCH)
     data class Math(val result: MathEvaluator.Result) : Request(Category.MATH)
     /** "How many milliseconds in a second", "5 feet to inches". */
     data class Convert(val conversion: Conversion) : Request(Category.MATH)
@@ -385,9 +399,17 @@ object IntentParser {
         parsePhoneNumber(s)?.let { return it }
         // Before sports: "what do eagles eat" is the bird.
         Animals.parse(s)?.let { return it }
+        // Before the keyboard and mouse parser: "g pro x 2" and "corsair hs80" are headsets.
+        com.brick.assistant.brain.Headgear.parse(raw)?.let { return Request.Headgear(it) }
+        Peripherals.parse(raw)?.let { return Request.Peripheral(it) }
+        Games.parseInfo(raw)?.let { return it }
+        com.brick.assistant.brain.PcBuild.parse(raw)?.let { return Request.PcBuild(it) }
+        Platforms.parse(raw)?.let { return Request.Platform(it) }
+        Tech.parse(s)?.let { return it }
         // Before the video-game parsers: "the knicks game" is a ballgame.
         com.brick.assistant.brain.Sports.parse(s)?.let { return it }
         Characters.parse(s)?.let { return it }
+        Games.parseFind(raw)?.let { return it }
         Works.parseDeals(s)?.let { return it }
         Works.parseSale(s)?.let { return it }
         com.brick.assistant.brain.Ranked.parse(s)?.let { return it }
@@ -436,7 +458,8 @@ object IntentParser {
         parseNavigation(s)?.let { return it }
         parseOpenApp(s)?.let { return it }
         parseBareTime(s)?.let { return it }
-        MathEvaluator.tryParse(s)?.let { return Request.Math(it) }
+        // As typed first, where "9,000" still has its comma and "10!" its mark; then with spoken numbers as digits.
+        (MathEvaluator.tryParse(raw) ?: MathEvaluator.tryParse(s))?.let { return Request.Math(it) }
         // Nothing matched exactly, but it's clearly about sky darkness ("bortle?", "light pollution tonight"):
         // answer that rather than searching the web.
         skyByKeywords(s)?.let { return it }
@@ -1459,7 +1482,7 @@ object IntentParser {
         val on = !off && (ON_WORDS.containsMatchIn(s) || pct != null || color != null || bright)
         if (!off && !on && !dim && !STATUS_WORDS.containsMatchIn(s)) return null
         val target = s
-            .replace(Regex("\\b(?:can you|could you|would you|please|turn|switch|set|make|put|change|dim|brighten|kill|shut|cut|the|my|to|at|on|off|up|down|" +
+            .replace(Patterns.get("\\b(?:can you|could you|would you|please|turn|switch|set|make|put|change|dim|brighten|kill|shut|cut|the|my|to|at|on|off|up|down|" +
                 "lights?|lamps?|bulbs?|leds?|strips?|plugs?|outlets?|fans?|all|of|in|percent|brightness|brighter|dimmer|color|colour|is|are|it|them|" +
                 "enable|disable|activate|deactivate|govee|smart|home|google|nest|devices?)\\b"), " ")
             .replace(Patterns.get("\\b\\d{1,3}\\b|%"), " ")
